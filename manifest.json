@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "chyld.vault-sync",
+  "name": "Vault Sync",
+  "version": "0.1.0",
+  "author": "Chyld Medford",
+  "license": "MIT",
+  "description": "Sync your Obsidian vault with a GitHub repo from the bar. One click commits your notes, brings in changes from your other devices and pushes. Conflicting edits are kept side by side, never lost.",
+  "homepage": "https://github.com/chyld/omarchy-vault-sync",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "Settings.qml"
+  },
+  "barWidget": {
+    "displayName": "Vault Sync",
+    "description": "Sync an Obsidian vault with GitHub",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
