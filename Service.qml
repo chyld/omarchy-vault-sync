@@ -60,18 +60,100 @@ Item {
     return (v === undefined || v === null) ? Defaults.values[key] : v
   }
 
-  // Obsidian's own vault list: the tree in the popup, and the default vault.
-  readonly property var vaults: Safe.vaults(obsidianConfig.content)
+  // ------------------------------------------------------------ files
+
+  // Files outside the vaults are read and written only through files.py,
+  // which opens each one with O_NOFOLLOW, checks the descriptor and caps the
+  // size, and writes repos.json 0600 in a 0700 directory. The FileViews
+  // below only watch for changes; they never read.
+  readonly property string filesScript: {
+    var url = String(Qt.resolvedUrl("files.py"))
+    return url.indexOf("file://") === 0 ? Safe.vaultPath(decodeURIComponent(url.slice(7))) : ""
+  }
+
+  property string obsidianText: ""   // ~/.config/obsidian/obsidian.json
+  property string themeText: ""      // the theme's colors.toml
+  property string reposText: ""      // ~/.config/vault-sync/repos.json
+  property bool reposReady: false
+  property int reposWrites: 0        // writes not yet on disk
+
+  Runner { id: io }
+  property var ioQueue: []
+
+  function ioRun(key, argv, stdin, done) {
+    for (var i = 0; i < sync.ioQueue.length; i++) if (key && sync.ioQueue[i].key === key) return
+    sync.ioQueue = sync.ioQueue.concat([{ key: key, argv: argv, stdin: stdin, done: done }])
+    if (!io.running) sync.ioNext()
+  }
+
+  function ioNext() {
+    if (sync.ioQueue.length === 0 || io.running) return
+    var job = sync.ioQueue[0]
+    sync.ioQueue = sync.ioQueue.slice(1)
+    var started = io.run(job.argv, 10000, function(code, out, err) {
+      job.done(code, out, err)
+      Qt.callLater(sync.ioNext)
+    }, job.stdin === null ? undefined : job.stdin)
+    if (!started) { job.done(-1, "", ""); Qt.callLater(sync.ioNext) }
+  }
+
+  // Reads one of the files files.py knows into its property. A missing file
+  // reads as empty; a refused one (a symlink, a FIFO, too large) as empty too.
+  function readFile(what) {
+    if (!sync.filesScript) return
+    sync.ioRun("read:" + what, Commands.readFile(sync.filesScript, what), null, function(code, out) {
+      var text = code === 0 ? out : ""
+      if (what === "obsidian") sync.obsidianText = text
+      else if (what === "theme") sync.themeText = text
+      else if (what === "repos") {
+        // A read queued before a write would bring back the old contents.
+        if (sync.reposWrites === 0) sync.reposText = text
+        sync.reposReady = true
+      }
+    })
+  }
+
+  // Watchers only: they say a file changed, and files.py reads it.
+  FileView {
+    path: sync.home ? sync.home + "/.config/obsidian/obsidian.json" : ""
+    preload: false
+    blockAllReads: true
+    watchChanges: true
+    printErrors: false
+    onFileChanged: sync.readFile("obsidian")
+  }
 
   FileView {
-    id: obsidianConfig
-    property string content: ""
-    path: sync.home ? sync.home + "/.config/obsidian/obsidian.json" : ""
+    path: sync.home ? sync.home + "/.local/state/omarchy/current/theme/colors.toml" : ""
+    preload: false
+    blockAllReads: true
     watchChanges: true
-    onFileChanged: reload()
-    onLoaded: content = text()
-    onLoadFailed: content = ""
+    printErrors: false
+    onFileChanged: sync.readFile("theme")
   }
+
+  FileView {
+    id: reposWatch
+    path: sync.home ? sync.home + "/.config/vault-sync/repos.json" : ""
+    preload: false
+    blockAllReads: true
+    watchChanges: true
+    printErrors: false
+    onFileChanged: sync.readFile("repos")
+  }
+
+  Component.onCompleted: {
+    sync.readFile("obsidian")
+    sync.readFile("theme")
+    sync.readFile("repos")
+    sync.checkVisibility()
+  }
+
+  // Obsidian's own vault list: the tree in the popup.
+  readonly property var vaults: Safe.vaults(sync.obsidianText)
+
+  // The theme's yellow, for notes changed since the last sync.
+  readonly property color dirtyColor: Safe.themeColor(sync.themeText, ["yellow", "color3"], "#e0af68")
 
   readonly property string repoUrl: Safe.repoUrl(String(sync.setting("repoUrl") || ""))
 
@@ -81,29 +163,18 @@ Item {
   // the plugin and shell.json, so every repository remembers its vaults:
   // switching to a known URL ticks its vaults again, and a new URL starts
   // with none ticked.
-  readonly property string repoConfigPath: sync.home ? sync.home + "/.config/vault-sync/repos.json" : ""
-  readonly property var repoConfig: Safe.repoConfig(repoConfigFile.content)
-
-  FileView {
-    id: repoConfigFile
-    property string content: ""
-    property bool ready: false
-    path: sync.repoConfigPath
-    watchChanges: true
-    atomicWrites: true
-    onFileChanged: reload()
-    onLoaded: { content = text(); ready = true }
-    // A missing file is an empty one; it is written on the first change.
-    onLoadFailed: { content = ""; ready = true }
-    // Reading again after a save also starts watching a file that didn't
-    // exist when the plugin loaded, so later edits by hand are picked up.
-    onSaved: reload()
-  }
+  readonly property var repoConfig: Safe.repoConfig(sync.reposText)
 
   function writeRepoConfig(text) {
-    if (!sync.repoConfigPath) return
-    repoConfigFile.content = text   // shown at once, before the write lands
-    repoConfigFile.setText(text)
+    if (!sync.filesScript || !sync.reposReady) return
+    sync.reposText = text   // shown at once, before the write lands
+    sync.reposWrites++
+    sync.ioRun("", Commands.writeRepos(sync.filesScript), text, function() {
+      sync.reposWrites--
+      // Watch the file again: a watch set up before it existed may not fire.
+      reposWatch.path = ""
+      reposWatch.path = sync.home + "/.config/vault-sync/repos.json"
+    })
   }
 
   // The vaults synced to the chosen repository, each in its own
@@ -125,21 +196,6 @@ Item {
     else list.splice(i, 1)
     sync.writeRepoConfig(Safe.repoConfigText(sync.repoConfig, sync.repoUrl, { vaults: list }))
   }
-
-  // Once: older versions kept the ticked vaults in shell.json. They become
-  // the entry for the repository that was chosen then.
-  function migrate() {
-    if (!repoConfigFile.ready || sync.repoConfig.migrated || !sync.shell) return
-    var url = sync.repoUrl
-    var legacy = url && !Safe.knowsRepo(sync.repoConfig, url) ? Safe.legacySelection(sync.settings, sync.vaults) : null
-    sync.writeRepoConfig(Safe.repoConfigText(sync.repoConfig, url, legacy ? { vaults: legacy } : null, true))
-  }
-
-  Connections {
-    target: repoConfigFile
-    function onReadyChanged() { Qt.callLater(sync.migrate) }
-  }
-  onShellChanged: Qt.callLater(sync.migrate)
 
   onSelectedChanged: sync.refresh()
   // A different repository has its own sync history: forget what was shown
@@ -231,9 +287,11 @@ Item {
   // here touches the network or changes a vault.
   function refresh() {
     if (sync.syncing) return
-    var queue = sync.refreshQueue.slice()
-    for (var i = 0; i < sync.selected.length; i++)
-      if (queue.indexOf(sync.selected[i]) === -1) queue.push(sync.selected[i])
+    // Called while the service is still being built: nothing to do yet.
+    var selected = sync.selected || []
+    var queue = (sync.refreshQueue || []).slice()
+    for (var i = 0; i < selected.length; i++)
+      if (queue.indexOf(selected[i]) === -1) queue.push(selected[i])
     sync.refreshQueue = queue
     if (!local.running) sync.refreshNext()
   }
@@ -300,8 +358,6 @@ Item {
   }
 
   Timer { id: visibilityRetry; interval: 500; onTriggered: sync.checkVisibility() }
-
-  Component.onCompleted: sync.checkVisibility()
 
   // ------------------------------------------------------------ sync
 

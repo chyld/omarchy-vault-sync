@@ -10,6 +10,8 @@ var GIT = "/usr/bin/git"
 var FIND = "/usr/bin/find"
 var MV = "/usr/bin/mv"
 var CURL = "/usr/bin/curl"
+var TIMEOUT = "/usr/bin/timeout"
+var PYTHON = "/usr/bin/python3"
 var DEFAULT_OMARCHY = "/usr/share/omarchy"
 
 // Where the vault stands with a repository, kept in the vault's own git
@@ -23,16 +25,39 @@ var PATHSPEC = ["--", ":(top)", ":(top,exclude).obsidian", ":(top,exclude).trash
 
 // git in the vault, with settings that keep every run predictable whatever
 // the user's global config says: no pager, no colour, plain paths, and no
-// replayed conflict resolutions.
+// replayed conflict resolutions. A vault's repository never runs code or
+// plants links: no hooks, no fsmonitor, and a symlink that arrives from
+// GitHub is checked out as a plain file.
 function git(vault, args) {
   return [GIT, "-C", vault,
           "-c", "core.quotePath=false", "-c", "color.ui=false",
-          "-c", "rerere.enabled=false", "-c", "core.pager=cat"].concat(args)
+          "-c", "rerere.enabled=false", "-c", "core.pager=cat",
+          "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+          "-c", "core.symlinks=false"].concat(args)
 }
 
-// Environment for every git run: never ask on a terminal, never open an
-// editor, and report errors in English so gitError() can read them.
-var ENV = { GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "true", GIT_MERGE_AUTOEDIT: "no", LC_ALL: "C" }
+// The whole environment of every command; nothing else is inherited. A
+// fixed PATH, the home and runtime directories, and the session bus (git
+// asks the user's credential helper, which may use the keyring). git never
+// asks on a terminal, never opens an editor, and reports errors in English
+// so gitError() can read them. Only absolute directory values are passed on.
+function environment(home, runtimeDir, bus, configHome, ghConfigDir) {
+  var env = { PATH: "/usr/bin:/bin", LC_ALL: "C",
+              GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "true", GIT_MERGE_AUTOEDIT: "no" }
+  var dirs = { HOME: home, XDG_RUNTIME_DIR: runtimeDir, XDG_CONFIG_HOME: configHome, GH_CONFIG_DIR: ghConfigDir }
+  for (var k in dirs) if (Safe.vaultPath(String(dirs[k] || ""))) env[k] = Safe.vaultPath(String(dirs[k]))
+  var b = String(bus || "")
+  if (/^unix:[A-Za-z0-9=,\/._-]{1,200}$/.test(b)) env.DBUS_SESSION_BUS_ADDRESS = b
+  return env
+}
+
+// ------------------------------------------------------------ files
+
+// files.py, next to this file: the only reads and writes outside a vault's
+// repository (Obsidian's vault list, the theme's colours, repos.json), each
+// through a checked descriptor. `script` is its absolute path.
+function readFile(script, what) { return [PYTHON, "-I", "-S", script, "read", what] }
+function writeRepos(script) { return [PYTHON, "-I", "-S", script, "write", "repos"] }
 
 // ------------------------------------------------------------ repository
 
@@ -154,9 +179,10 @@ function push(vault, commit, branch) {
 // for a public repository, and 404 for a private or missing one.
 function visibility(url) {
   var slug = Safe.repoSlug(url)
-  return slug ? [CURL, "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "10",
+  return slug ? [CURL, "-q", "-sS", "--proto", "=https", "--max-time", "10", "--max-filesize", "1048576",
+                 "--noproxy", "*", "-o", "/dev/null", "-w", "%{http_code}",
                  "-H", "Accept: application/vnd.github+json",
-                 "https://api.github.com/repos/" + slug] : null
+                 "--", "https://api.github.com/repos/" + slug] : null
 }
 
 // ------------------------------------------------------------ conflicts

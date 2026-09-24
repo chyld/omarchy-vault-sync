@@ -1,6 +1,4 @@
 import QtQuick
-import Quickshell
-import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Defaults.js" as Defaults
@@ -46,13 +44,12 @@ Panel {
   }
 
   // shell.json keeps only the repository URL; the vaults ticked for each
-  // repository live in the service's own file (the old "vault" and
-  // "vaults" keys are dropped here once the service has copied them).
+  // repository live in the service's own file (keys older versions saved
+  // here are dropped).
   function set(key, v) {
     var next = {}
-    var migrated = root.service && root.service.repoConfig.migrated
     for (var k in root.settings)
-      if (!(migrated && (k === "vault" || k === "vaults"))) next[k] = root.settings[k]
+      if (k !== "vault" && k !== "vaults") next[k] = root.settings[k]
     next[key] = v
     root.settings = next
     saveTimer.restart()
@@ -76,18 +73,8 @@ Panel {
   // ------------------------------------------------------------ state text
 
   // The mark turns the theme's yellow when notes changed since the last
-  // sync. Read from the current Omarchy theme, and again when it changes.
-  readonly property color dirtyColor: Safe.themeColor(themeColors.content, ["yellow", "color3"], "#e0af68")
-
-  FileView {
-    id: themeColors
-    property string content: ""
-    path: Quickshell.env("HOME") + "/.local/state/omarchy/current/theme/colors.toml"
-    watchChanges: true
-    onFileChanged: reload()
-    onLoaded: content = text()
-    onLoadFailed: content = ""
-  }
+  // sync; the service reads it from the current Omarchy theme.
+  readonly property color dirtyColor: root.service ? root.service.dirtyColor : "#e0af68"
 
   // Behind the mark: the bar's own background, or the theme's when the bar
   // is see-through.
@@ -231,7 +218,7 @@ Panel {
         cutColor: root.markBackground
       }
     }
-    tooltipText: root.opened ? "" : "Vault Sync: " + Safe.plain(root.headline, 60)
+    tooltipText: root.opened ? "" : Safe.hostText("Vault Sync: " + root.headline, 60)
     onPressed: function(b) {
       if (b === Qt.MiddleButton && root.service) {
         if (urlField.invalid) return root.open()
@@ -403,6 +390,7 @@ Panel {
             id: urlField
             width: parent.width - repoGlyph.width - parent.spacing
             placeholderText: "https://github.com/you/notes"
+            maximumLength: 200
             foreground: root.barForeground
             text: String(root.value("repoUrl") || "")
             // The field keeps what was typed; only a valid URL is saved.

@@ -90,16 +90,6 @@ function cleanSelection(list) {
   return out
 }
 
-// The selection older versions kept in shell.json: `vaults` (a list of
-// paths), else a single `vault`, else the vault Obsidian has open. Read
-// once, to fill in the repository file.
-function legacySelection(settings, known) {
-  if (settings && Array.isArray(settings.vaults)) return cleanSelection(settings.vaults)
-  if (settings && typeof settings.vault === "string" && settings.vault) return cleanSelection([settings.vault])
-  for (var i = 0; i < known.length; i++) if (known[i].open) return cleanSelection([known[i].path])
-  return []
-}
-
 // ------------------------------------------------------------ repository file
 
 // ~/.config/vault-sync/repos.json: which vaults sync to which repository,
@@ -263,6 +253,12 @@ function branchName(value) {
   if (!/^[A-Za-z0-9._\/-]+$/.test(value)) return ""
   if (/^[-\/.]|\/$|\.lock$|\.\.|\/\/|\/\.|@\{/.test(value)) return ""
   return value
+}
+
+// Text for a host component the plugin cannot pin to PlainText (the bar
+// tooltip): no markup characters, no controls, capped.
+function hostText(value, max) {
+  return plain(String(value === undefined || value === null ? "" : value).replace(/[<>&]/g, ""), max)
 }
 
 // Text for display: controls removed and capped.

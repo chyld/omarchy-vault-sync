@@ -134,6 +134,25 @@ test("vaults reads obsidian.json defensively", () => {
   for (const bad of ["", "{", "[]", '{"vaults":[]}', '{"vaults":"x"}']) assert.equal(Safe.vaults(bad).length, 0)
 })
 
+test("the environment is minimal and only takes absolute directories", () => {
+  const env = { ...Commands.environment("/home/u", "/run/user/1000", "unix:path=/run/user/1000/bus", "", "relative") }
+  assert.deepEqual(Object.keys(env).sort(), ["DBUS_SESSION_BUS_ADDRESS", "GIT_EDITOR", "GIT_MERGE_AUTOEDIT",
+                                             "GIT_TERMINAL_PROMPT", "HOME", "LC_ALL", "PATH", "XDG_RUNTIME_DIR"])
+  assert.equal(env.PATH, "/usr/bin:/bin")
+  assert.equal(Commands.environment("/home/u", "", "unix:path=/x;rm -rf /", "", "").DBUS_SESSION_BUS_ADDRESS, undefined)
+})
+
+test("git never runs hooks or fsmonitor, and checks symlinks out as files", () => {
+  const argv = [...Commands.status("/home/u/Alpha")]
+  for (const opt of ["core.hooksPath=/dev/null", "core.fsmonitor=false", "core.symlinks=false"])
+    assert.equal(argv[argv.indexOf(opt) - 1], "-c", opt)
+  const curl = [...Commands.visibility("https://github.com/chyld/notes")]
+  assert.equal(curl[1], "-q")
+  assert.ok(!curl.includes("-L"))
+  assert.equal(curl.at(-2), "--")
+  assert.deepEqual([...Commands.readFile("/p/files.py", "repos")], ["/usr/bin/python3", "-I", "-S", "/p/files.py", "read", "repos"])
+})
+
 test("commands are argv arrays with paths after --", () => {
   const v = "/home/u/Alpha"
   const add = [...Commands.add(v, ["-rf.md", "a b.md"])]
@@ -202,14 +221,9 @@ test("layout commands use a separate index and literal paths", () => {
   assert.deepEqual([...Commands.commitTree(v, "t", ["p1"], "m")].slice(-6), ["commit-tree", "t", "-p", "p1", "-m", "m"])
 })
 
-test("legacySelection reads the old list, the old single vault, or the open one", () => {
-  const known = [{ path: "/v/Alpha", open: false }, { path: "/v/Beta", open: true }]
-  assert.deepEqual([...Safe.legacySelection({ vaults: ["/v/Alpha", "/v/Beta", "/v/Alpha", "/w/Alpha", "rel", "/v/.x"] }, known)],
-                   ["/v/Alpha", "/v/Beta"])
-  assert.deepEqual([...Safe.legacySelection({ vaults: [] }, known)], [])
-  assert.deepEqual([...Safe.legacySelection({ vault: "/v/Alpha" }, known)], ["/v/Alpha"])
-  assert.deepEqual([...Safe.legacySelection({}, known)], ["/v/Beta"])
-  assert.deepEqual([...Safe.legacySelection(null, [])], [])
+test("hostText strips markup and controls for host-rendered tooltips", () => {
+  assert.equal(Safe.hostText('Vault Sync: <img src="http://x/">a&b\u202e', 60), 'Vault Sync: img src="http://x/"ab')
+  assert.equal(Safe.hostText("x".repeat(100), 10).length, 10)
   assert.equal(Safe.vaultName("/home/u/My Notes"), "My Notes")
 })
 
