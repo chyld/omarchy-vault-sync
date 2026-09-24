@@ -230,7 +230,7 @@ That removes the plugin and its bar entry, including the repository URL in
 | `Safe.js` | Validation and parsing of everything that is not a literal |
 
 Run the tests with `node --test tests/` and
-`/usr/bin/python3 -m unittest discover -s tests`. The manifest sets `keepLoaded`, so
+`/usr/bin/python3 -B -m unittest discover -s tests`. The manifest sets `keepLoaded`, so
 after changing `Service.qml` or anything it loads, run `omarchy restart shell`.
 
 ## License

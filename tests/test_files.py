@@ -1,5 +1,5 @@
 """Tests for files.py, the only code that reads or writes files outside a
-vault's git repository. Run with: /usr/bin/python3 -m unittest discover -s tests"""
+vault's git repository. Run with: /usr/bin/python3 -B -m unittest discover -s tests"""
 
 import sys
 
