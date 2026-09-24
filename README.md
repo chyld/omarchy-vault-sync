@@ -76,7 +76,7 @@ Vault Sync hasn't seen starts with none ticked. This is kept in
 ```json
 {
   "version": 1,
-  "migrated": true,
+  "current": "https://github.com/you/notes",
   "repos": {
     "https://github.com/you/notes": {
       "vaults": ["/home/you/Documents/Alpha", "/home/you/Documents/Beta"],
@@ -91,8 +91,9 @@ Vault Sync hasn't seen starts with none ticked. This is kept in
 }
 ```
 
-`lastSync` is when Sync now last finished for the repository, and `synced` is
-when each vault last synced to it successfully.
+`current` is the repository in use, `lastSync` is when Sync now last finished
+for a repository (with at least one vault synced), and `synced` is when each
+vault last synced to it successfully.
 You can edit it by hand; Vault Sync picks up the change.
 
 If the repository is public, the popup says so: anyone on the internet can read
@@ -136,7 +137,7 @@ todo (conflict 2026-09-23 1405).md   ← your version
 ```
 
 The sync finishes, and the icon shows the conflict until you merge the two by
-hand and delete the `(conflict …)` copy. When one device deleted a note and the
+hand, delete the `(conflict …)` copy and sync again. When one device deleted a note and the
 other edited it, the edit is kept.
 
 ## The icon
@@ -185,17 +186,22 @@ Middle-click the icon to sync without opening the popup.
   the current theme's `colors.toml` (for its yellow) and `repos.json`, each
   through `files.py`: opened once without following a symlink, checked to be a
   regular file of yours, and size-limited. Every 5 minutes (and when the popup
-  opens) it also runs a local `git status` in each ticked vault, with no
+  opens) the engine also reads each ticked vault's local git state (changed
+  files, commits not yet synced, conflict copies), read-only and with no
   network.
-- **Commands:** all run with an argument list, never through a shell, with a
-  fixed `PATH` and no inherited environment, each under `/usr/bin/timeout` so
-  a deadline stops the command and everything it started:
+- **Commands:** all run with an argument list, never through a shell:
   - `/usr/bin/python3 -I -S engine.py`: every git operation (`/usr/bin/git`),
     each git command with its own deadline, in its own process group, with
     its output read under a byte limit.
   - `/usr/bin/python3 -I -S files.py`: the files listed above.
   - `/usr/bin/curl`: the public check.
-  - Omarchy's `omarchy-launch-browser`: Open on GitHub.
+
+  These three run with a fixed `PATH` and no inherited environment, under
+  `/usr/bin/timeout`, so a deadline stops each one and everything it started.
+  The one exception is **Open on GitHub**, which starts Omarchy's
+  `omarchy-launch-browser` with your repository's page (a checked
+  `https://github.com/<owner>/<repo>` URL), detached and with the shell's
+  normal environment, since a browser needs your display.
 - **git in your vaults** never runs hooks or an fsmonitor, and a symlink that
   arrives from GitHub is checked out as a plain file, never as a link.
 - **Limits:** a file over 100 MB stops a sync before anything is committed
@@ -206,8 +212,6 @@ Middle-click the icon to sync without opening the popup.
   shows the step in progress in small text; it disappears when the sync ends.
   What the sync moved shows in the header (`Synced 14:05 · ↑3 ↓2`), and
   failures and conflicts on the icon and each vault's row.
-  GitHub refuses files over 100 MB, so a sync with one stops before committing
-  anything.
 
 ## Remove
 
