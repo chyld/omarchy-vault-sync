@@ -169,15 +169,18 @@ Middle-click the icon to sync without opening the popup.
   that helper over git's credential protocol; it never appears in a command
   line, and Vault Sync never sees, stores or logs it.
 - **Files it writes:**
-  - `~/.config/vault-sync/repos.json`: which vaults sync to which repository,
-    and when. Written by `files.py` at mode 0600 in a 0700 directory, through
-    an exclusively created temporary that is renamed into place.
+  - `~/.config/vault-sync/repos.json`: the repository in use, which vaults
+    sync to each repository, and when. Written by `files.py` at mode 0600 in a
+    0700 directory, through an exclusively created temporary that is renamed
+    into place.
   - Inside each ticked vault, only when you press Sync now: its `.git` folder
     (including two refs per repository under `refs/vault-sync/<owner>/<repo>/`
     and a separate index file, `.git/vault-sync-index`, used to build the
-    repository's tree), and the conflict copies described above.
-  - The repository URL, saved on Vault Sync's bar entry in
-    `~/.config/omarchy/shell.json` by the Omarchy shell.
+    repository's tree), and the conflict copies described above, each created
+    as a new file (never replacing one) without following a symlink.
+  - Nothing in `~/.config/omarchy/shell.json` beyond Vault Sync's bar entry.
+    (Older versions kept the repository URL there; it is read once and
+    removed the first time you set a URL.)
 - **Files it reads:** Obsidian's vault list (`~/.config/obsidian/obsidian.json`),
   the current theme's `colors.toml` (for its yellow) and `repos.json`, each
   through `files.py`: opened once without following a symlink, checked to be a
@@ -187,11 +190,18 @@ Middle-click the icon to sync without opening the popup.
 - **Commands:** all run with an argument list, never through a shell, with a
   fixed `PATH` and no inherited environment, each under `/usr/bin/timeout` so
   a deadline stops the command and everything it started:
-  `/usr/bin/git`, `/usr/bin/python3` (`files.py`), `/usr/bin/find` (files over
-  50 MB), `/usr/bin/test` and `/usr/bin/mv` (conflict copies), `/usr/bin/curl`
-  (the public check), and Omarchy's `omarchy-launch-browser` (Open on GitHub).
+  - `/usr/bin/python3 -I -S engine.py`: every git operation (`/usr/bin/git`),
+    each git command with its own deadline, in its own process group, with
+    its output read under a byte limit.
+  - `/usr/bin/python3 -I -S files.py`: the files listed above.
+  - `/usr/bin/curl`: the public check.
+  - Omarchy's `omarchy-launch-browser`: Open on GitHub.
 - **git in your vaults** never runs hooks or an fsmonitor, and a symlink that
   arrives from GitHub is checked out as a plain file, never as a link.
+- **Limits:** a file over 100 MB stops a sync before anything is committed
+  (GitHub would refuse it), and each git command has a deadline. git itself
+  has no size limit on what `fetch` downloads, so a very large push from
+  another machine is bounded only by time.
 - **No desktop notifications.** While a sync runs, the bottom of the popup
   shows the step in progress in small text; it disappears when the sync ends.
   What the sync moved shows in the header (`Synced 14:05 · ↑3 ↓2`), and
@@ -205,32 +215,34 @@ Middle-click the icon to sync without opening the popup.
 omarchy plugin remove chyld.vault-sync
 ```
 
-That removes the plugin and its bar entry, including the repository URL in
-`~/.config/omarchy/shell.json`. Nothing keeps running afterwards. What stays:
+That removes the plugin and its bar entry in `~/.config/omarchy/shell.json`.
+Nothing keeps running afterwards. What stays:
 
 - **Each synced vault's `.git` folder**, with your notes' history, the
   `refs/vault-sync/…` refs and `.git/vault-sync-index`. Your notes themselves
   are untouched. Delete a vault's `.git` folder only if you no longer want it
   to be a git repository.
-- **`~/.config/vault-sync/repos.json`** (which vaults sync to which
-  repository). Delete that file, then the empty `~/.config/vault-sync` folder,
-  if you don't want it kept.
+- **`~/.config/vault-sync/repos.json`** (the repository in use and which
+  vaults sync to which repository). Delete that file, then the empty
+  `~/.config/vault-sync` folder, if you don't want it kept.
 - **Your GitHub repository**, which Vault Sync never deletes.
 
 ## Development
 
 | File | Role |
 |---|---|
-| `Service.qml` | Settings, local status, and the sync itself |
-| `Settings.qml` | The bar icon and its popup |
+| `Service.qml` | The state: the repository file, each vault's status, and running the helpers |
+| `Settings.qml` | The bar icon and its popup; everything goes through the service |
 | `Logo.qml` | The mark, drawn as vectors, changing with the sync state |
 | `Runner.qml` | Runs one command at a time: minimal environment, byte budget, and a deadline that stops the whole process group |
-| `files.py` | Every read and write outside a vault's repository, through checked descriptors |
-| `Commands.js` | Every command Vault Sync runs |
-| `Safe.js` | Validation and parsing of everything that is not a literal |
+| `engine.py` | Every git operation: `status` and `sync`, printed as JSON lines |
+| `files.py` | Every read and write outside a vault, through checked descriptors |
+| `Commands.js` | Every command the shell runs |
+| `Safe.js` | Validation of everything that is not a literal, including every line the engine prints |
 
 Run the tests with `node --test tests/` and
-`/usr/bin/python3 -B -m unittest discover -s tests`. The manifest sets `keepLoaded`, so
+`/usr/bin/python3 -B -m unittest discover -s tests`. The engine's tests run
+real git against a local bare repository. The manifest sets `keepLoaded`, so
 after changing `Service.qml` or anything it loads, run `omarchy restart shell`.
 
 ## License

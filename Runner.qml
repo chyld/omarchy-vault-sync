@@ -11,8 +11,10 @@ import "Commands.js" as Commands
 // the deadline stops the command and everything it started (git's remote
 // helpers, a credential helper) with TERM, then KILL two seconds later. A
 // backstop timer does the same from here if timeout itself hangs, and on
-// unload. Output is read in chunks under a byte budget; overflow stops the
-// command and counts as failure. The environment is not inherited: it is
+// unload. Output is read in chunks under a budget; overflow stops the
+// command and counts as failure. The budget counts characters, not bytes,
+// so it is a second line of defence: the byte limits are at the source,
+// in engine.py and files.py. The environment is not inherited: it is
 // the minimal set Commands.environment() builds. A command that cannot
 // start reports exit code -1.
 Item {
@@ -28,11 +30,19 @@ Item {
   property bool overflow: false
   property int budget: 1048576
   property var stdinText: null
+  // Streaming mode: stdout is handed to `onLine` one line at a time as it
+  // arrives, instead of being collected. A line longer than lineMax stops
+  // the command, like the byte budget.
+  property var onLine: null
+  property string partial: ""
+  property int lineMax: 65536
+  property int received: 0
 
   // `callback(code, stdout, stderr)`. `stdin`, when given, is written to the
-  // command and then closed. Returns false when a command is already running
-  // or argv is missing.
-  function run(argv, timeoutMs, callback, stdin) {
+  // command and then closed. With `lineHandler`, stdout goes to it line by
+  // line and `callback` gets "" for stdout. Returns false when a command is
+  // already running or argv is missing.
+  function run(argv, timeoutMs, callback, stdin, lineHandler) {
     if (!argv || runner.running) return false
     var seconds = Math.max(1, Math.ceil((timeoutMs || 30000) / 1000))
     runner.pending = callback || function() {}
@@ -41,7 +51,10 @@ Item {
     runner.out = ""
     runner.err = ""
     runner.overflow = false
-    runner.stdinText = stdin === undefined ? null : String(stdin)
+    runner.stdinText = stdin === undefined || stdin === null ? null : String(stdin)
+    runner.onLine = lineHandler || null
+    runner.partial = ""
+    runner.received = 0
     proc.stdinEnabled = runner.stdinText !== null
     proc.command = [Commands.TIMEOUT, "-k", "2", "--", seconds + "s"].concat(argv)
     proc.running = true
@@ -67,16 +80,23 @@ Item {
     })
   }
 
+  // Every byte counts against the budget, whether collected or streamed.
   function append(kind, chunk) {
     if (runner.overflow) return
-    if (runner.out.length + runner.err.length + chunk.length > runner.budget) {
-      runner.overflow = true
-      runner.err = "output too large"
-      runner.stop()
-      return
-    }
-    if (kind === "out") runner.out += chunk
-    else runner.err += chunk
+    runner.received += chunk.length
+    if (runner.received > runner.budget) return runner.overflowed("output too large")
+    if (kind === "err") { runner.err += chunk; return }
+    if (!runner.onLine) { runner.out += chunk; return }
+    var lines = (runner.partial + chunk).split("\n")
+    runner.partial = lines.pop()
+    if (runner.partial.length > runner.lineMax) return runner.overflowed("output line too long")
+    for (var i = 0; i < lines.length; i++) if (lines[i]) runner.onLine(lines[i])
+  }
+
+  function overflowed(reason) {
+    runner.overflow = true
+    runner.err = reason
+    runner.stop()
   }
 
   // TERM reaches timeout, which passes it on to the command's process group;

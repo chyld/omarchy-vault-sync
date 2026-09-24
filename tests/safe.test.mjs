@@ -54,76 +54,6 @@ test("relPath keeps paths inside the vault and out of .git", () => {
     assert.equal(Safe.relPath(bad), "", JSON.stringify(bad))
 })
 
-test("branchName", () => {
-  for (const ok of ["main", "master", "feature/x", "v1.2"]) assert.equal(Safe.branchName(ok), ok)
-  for (const bad of ["", "-x", "/x", "x/", "a..b", "x.lock", "a b", "a@{1}", ".hidden", "a/.b", "a//b"])
-    assert.equal(Safe.branchName(bad), "", bad)
-})
-
-test("conflictName puts the tag before the extension", () => {
-  const d = new Date(2026, 8, 23, 14, 5)
-  assert.equal(Safe.conflictName("todo.md", d), "todo (conflict 2026-09-23 1405).md")
-  assert.equal(Safe.conflictName("a/b/note.v2.md", d), "a/b/note.v2 (conflict 2026-09-23 1405).md")
-  assert.equal(Safe.conflictName("dir.x/README", d), "dir.x/README (conflict 2026-09-23 1405)")
-  assert.equal(Safe.conflictName(".env", d), ".env (conflict 2026-09-23 1405)")
-  assert.equal(Safe.conflictName("todo.md", d, 3), "todo (conflict 2026-09-23 1405 3).md")
-  for (const n of [1, 2, 7]) assert.ok(Safe.isConflictCopy(Safe.conflictName("x/todo.md", d, n)))
-  assert.ok(!Safe.isConflictCopy("todo.md"))
-  assert.ok(!Safe.isConflictCopy("my (conflict notes).md"))
-})
-
-test("commitMessage lists files and caps the list", () => {
-  const d = new Date(2026, 8, 23, 14, 5)
-  assert.equal(Safe.commitMessage(["a.md"], d), "Sync 2026-09-23 14:05 — 1 file changed\n\na.md")
-  const many = Array.from({ length: 60 }, (_, i) => `n${i}.md`)
-  const msg = Safe.commitMessage(many, d).split("\n")
-  assert.equal(msg[0], "Sync 2026-09-23 14:05 — 60 files changed")
-  assert.equal(msg.length, 2 + 50 + 1)
-  assert.equal(msg.at(-1), "… and 10 more")
-})
-
-test("status parses porcelain -z, skipping rename sources", () => {
-  const out = " M todo.md\x00?? new note.md\x00R  moved.md\x00old.md\x00 D gone.md\x00?? .git/x\x00"
-  assert.deepEqual(JSON.parse(JSON.stringify(Safe.status(out))), [
-    { code: " M", path: "todo.md" }, { code: "??", path: "new note.md" },
-    { code: "R ", path: "moved.md" }, { code: " D", path: "gone.md" }])
-  assert.equal(Safe.status("").length, 0)
-})
-
-test("remoteRefs reads the default branch and branches", () => {
-  const sha = "a".repeat(40)
-  const out = `ref: refs/heads/main\tHEAD\n${sha}\tHEAD\n${sha}\trefs/heads/main\n${sha}\trefs/heads/dev\n${sha}\trefs/tags/v1\n`
-  const r = Safe.remoteRefs(out)
-  assert.equal(r.head, "main")
-  assert.deepEqual([...r.branches], ["main", "dev"])
-  const empty = Safe.remoteRefs("")
-  assert.equal(empty.head, "")
-  assert.equal(empty.branches.length, 0)
-  assert.equal(Safe.remoteRefs("ref: refs/heads/-bad\tHEAD\n").head, "")
-})
-
-test("conflictSides reads index stages", () => {
-  const sha = "b".repeat(40)
-  const both = `100644 ${sha} 1\ta.md\x00100644 ${sha} 2\ta.md\x00100644 ${sha} 3\ta.md\x00`
-  assert.deepEqual({ ...Safe.conflictSides(both) }, { ours: true, theirs: true })
-  assert.deepEqual({ ...Safe.conflictSides(`100644 ${sha} 3\ta.md\x00`) }, { ours: false, theirs: true })
-  assert.deepEqual({ ...Safe.conflictSides("") }, { ours: false, theirs: false })
-})
-
-test("sizedPaths parses find -printf output", () => {
-  const out = "60000000\tvideo.mp4\x00" + "5\t../escape\x00" + "x\tbad.md\x00"
-  assert.deepEqual(JSON.parse(JSON.stringify(Safe.sizedPaths(out))), [{ size: 60000000, path: "video.mp4" }])
-})
-
-test("gitError gives readable reasons", () => {
-  assert.match(Safe.gitError("fatal: could not read Username for 'https://github.com': terminal prompts disabled"), /gh auth login/)
-  assert.match(Safe.gitError("remote: Repository not found.\nfatal: repository 'https://github.com/x/y.git/' not found"), /not found/)
-  assert.match(Safe.gitError("fatal: unable to access: Could not resolve host: github.com"), /connection/)
-  assert.match(Safe.gitError(" ! [rejected] HEAD -> main (fetch first)"), /Sync again/)
-  assert.equal(Safe.gitError("fatal: something odd\n"), "something odd")
-  assert.equal(Safe.gitError(""), "Git failed.")
-})
-
 test("vaults reads obsidian.json defensively", () => {
   const text = JSON.stringify({ vaults: {
     a: { path: "/home/u/Documents/Alpha", ts: 1, open: true },
@@ -136,50 +66,9 @@ test("vaults reads obsidian.json defensively", () => {
 
 test("the environment is minimal and only takes absolute directories", () => {
   const env = { ...Commands.environment("/home/u", "/run/user/1000", "unix:path=/run/user/1000/bus", "", "relative") }
-  assert.deepEqual(Object.keys(env).sort(), ["DBUS_SESSION_BUS_ADDRESS", "GIT_EDITOR", "GIT_MERGE_AUTOEDIT",
-                                             "GIT_TERMINAL_PROMPT", "HOME", "LC_ALL", "PATH", "XDG_RUNTIME_DIR"])
+  assert.deepEqual(Object.keys(env).sort(), ["DBUS_SESSION_BUS_ADDRESS", "HOME", "LC_ALL", "PATH", "XDG_RUNTIME_DIR"])
   assert.equal(env.PATH, "/usr/bin:/bin")
   assert.equal(Commands.environment("/home/u", "", "unix:path=/x;rm -rf /", "", "").DBUS_SESSION_BUS_ADDRESS, undefined)
-})
-
-test("git never runs hooks or fsmonitor, and checks symlinks out as files", () => {
-  const argv = [...Commands.status("/home/u/Alpha")]
-  for (const opt of ["core.hooksPath=/dev/null", "core.fsmonitor=false", "core.symlinks=false"])
-    assert.equal(argv[argv.indexOf(opt) - 1], "-c", opt)
-  const curl = [...Commands.visibility("https://github.com/chyld/notes")]
-  assert.equal(curl[1], "-q")
-  assert.ok(!curl.includes("-L"))
-  assert.equal(curl.at(-2), "--")
-  assert.deepEqual([...Commands.readFile("/p/files.py", "repos")], ["/usr/bin/python3", "-I", "-S", "/p/files.py", "read", "repos"])
-})
-
-test("commands are argv arrays with paths after --", () => {
-  const v = "/home/u/Alpha"
-  const add = [...Commands.add(v, ["-rf.md", "a b.md"])]
-  assert.equal(add[0], "/usr/bin/git")
-  assert.deepEqual(add.slice(add.indexOf("--")), ["--", ":(top,literal)-rf.md", ":(top,literal)a b.md"])
-  assert.deepEqual([...Commands.move(v, "a.md", "a (conflict).md")],
-                   ["/usr/bin/mv", "--no-clobber", "--", v + "/a.md", v + "/a (conflict).md"])
-  const status = [...Commands.status(v)]
-  assert.ok(status.indexOf("--no-optional-locks") < status.indexOf("status"))
-  assert.deepEqual(status.slice(status.indexOf("--")), ["--", ":(top)", ":(top,exclude).obsidian", ":(top,exclude).trash"])
-  assert.equal(Commands.visibility("nope"), null)
-  assert.equal([...Commands.visibility("https://github.com/chyld/notes")].at(-1), "https://api.github.com/repos/chyld/notes")
-})
-
-
-test("syncSummary says what a sync moved", () => {
-  const plain = (o) => JSON.parse(JSON.stringify(o))
-  assert.deepEqual(plain(Safe.syncSummary([], [], [], [])), {
-    headline: "Vault already up to date", body: "Nothing changed here or on GitHub.", short: "no changes" })
-  const s = plain(Safe.syncSummary(["a.md", "b.md", "c.md", "d.md"], ["x.md"], [], []))
-  assert.equal(s.headline, "Vault synced: 4 files up, 1 file down")
-  assert.equal(s.body, "Uploaded 4 files\nDownloaded 1 file")
-  assert.equal(s.short, "↑4 ↓1")
-  const c = plain(Safe.syncSummary(["todo (conflict 2026-09-23 1405).md"], ["todo.md"], ["todo.md"], ["big.bin"]))
-  assert.equal(c.headline, "Vault synced: 1 file down")
-  assert.equal(c.body, "Downloaded 1 file\nKept both versions of todo.md. Your copy is marked (conflict).\nOver 50 MB: big.bin")
-  assert.equal(c.short, "↓1 1 kept twice")
 })
 
 test("omarchyBin only trusts a plain absolute OMARCHY_PATH", () => {
@@ -204,23 +93,6 @@ test("vaultFolder maps a vault to Vaults/<name>", () => {
     assert.equal(Safe.vaultFolder(bad), "", bad)
 })
 
-test("inFolder keeps paths under a folder, without the prefix", () => {
-  assert.deepEqual([...Safe.inFolder(["Vaults/Alpha/a.md", "Vaults/Alpha/d/b.md", "Vaults/Alphabet/c.md", "Vaults/Alpha", "x.md"], "Vaults/Alpha")],
-                   ["a.md", "d/b.md"])
-})
-
-test("layout commands use a separate index and literal paths", () => {
-  const v = "/home/u/Alpha"
-  const stage = [...Commands.unstageFolder(v, "Vaults/Alpha")]
-  assert.deepEqual(stage.slice(0, 2), ["/usr/bin/env", "GIT_INDEX_FILE=/home/u/Alpha/.git/vault-sync-index"])
-  assert.equal(stage.at(-1), ":(top,literal)Vaults/Alpha")
-  assert.equal([...Commands.stageHeadAt(v, "Vaults/Alpha")].at(-2), "--prefix=Vaults/Alpha/")
-  assert.deepEqual([...Commands.push(v, "abc", "main")].slice(-3), ["-q", "origin", "abc:refs/heads/main"])
-  assert.deepEqual([...Commands.unpushed(v, "refs/vault-sync/chyld/notes")].slice(-5),
-                   ["--count", "--ignore-missing", "HEAD", "--not", "refs/vault-sync/chyld/notes/base"])
-  assert.deepEqual([...Commands.commitTree(v, "t", ["p1"], "m")].slice(-6), ["commit-tree", "t", "-p", "p1", "-m", "m"])
-})
-
 test("hostText strips markup and controls for host-rendered tooltips", () => {
   assert.equal(Safe.hostText('Vault Sync: <img src="http://x/">a&b\u202e', 60), 'Vault Sync: img src="http://x/"ab')
   assert.equal(Safe.hostText("x".repeat(100), 10).length, 10)
@@ -228,44 +100,34 @@ test("hostText strips markup and controls for host-rendered tooltips", () => {
 })
 
 test("the repository file maps each repository to its vaults", () => {
-  const text = JSON.stringify({ version: 1, migrated: true, repos: {
+  const text = JSON.stringify({ version: 1, current: "https://github.com/chyld/ddd.git", repos: {
     "https://github.com/chyld/ddd": { vaults: ["/v/Alpha", "/v/Beta", "/w/Beta", "bad"] },
     "https://github.com/chyld/eee.git": { vaults: [] },
     "http://evil.example/x": { vaults: ["/v/Alpha"] },
     "https://github.com/chyld/fff": "nope" } })
   const config = Safe.repoConfig(text)
-  assert.equal(config.migrated, true)
+  assert.equal(config.current, "https://github.com/chyld/ddd")
   assert.deepEqual([...Safe.selectionFor(config, "https://github.com/chyld/ddd.git")], ["/v/Alpha", "/v/Beta"])
   assert.deepEqual([...Safe.selectionFor(config, "https://github.com/chyld/eee")], [])
-  assert.equal(Safe.knowsRepo(config, "https://github.com/chyld/eee"), true)
   assert.deepEqual([...Safe.selectionFor(config, "https://github.com/chyld/new")], [])
-  assert.equal(Safe.knowsRepo(config, "https://github.com/chyld/new"), false)
   assert.equal(Object.keys(config.repos).length, 2)
 
   const next = JSON.parse(Safe.repoConfigText(config, "https://github.com/chyld/new/", { vaults: ["/v/Gamma"] }))
-  assert.deepEqual(next, { version: 1, migrated: true, repos: {
+  assert.deepEqual(next, { version: 1, current: "https://github.com/chyld/ddd", repos: {
     "https://github.com/chyld/ddd": { vaults: ["/v/Alpha", "/v/Beta"] },
     "https://github.com/chyld/eee": { vaults: [] },
     "https://github.com/chyld/new": { vaults: ["/v/Gamma"] } } })
 
   for (const bad of ["", "{", "[]", '{"repos":[]}', "null"]) {
     const c = Safe.repoConfig(bad)
-    assert.equal(c.migrated, false)
+    assert.equal(c.current, "")
     assert.equal(Object.keys(c.repos).length, 0)
   }
 })
 
-test("syncRefs gives each repository its own refs", () => {
-  assert.equal(Safe.syncRefs("https://github.com/chyld/notes"), "refs/vault-sync/chyld/notes")
-  assert.equal(Safe.syncRefs("https://github.com/chyld/ddd.git"), "refs/vault-sync/chyld/ddd")
-  assert.equal(Safe.syncRefs("https://github.com/chyld/.github"), "refs/vault-sync/chyld/_.github")
-  assert.equal(Safe.syncRefs("https://github.com/chyld/x.lock"), "refs/vault-sync/chyld/_x.lock")
-  assert.equal(Safe.syncRefs("nope"), "")
-})
-
 test("the repository file keeps when each repository and vault last synced", () => {
   const d = new Date(2026, 8, 23, 22, 15, 4)
-  let text = Safe.repoConfigText(Safe.repoConfig(""), "https://github.com/chyld/ddd", { vaults: ["/v/Zeta", "/v/Eta"] }, true)
+  let text = Safe.repoConfigText(Safe.repoConfig(""), "https://github.com/chyld/ddd", { vaults: ["/v/Zeta", "/v/Eta"] })
   text = Safe.repoConfigText(Safe.repoConfig(text), "https://github.com/chyld/ddd",
                              { lastSync: d, lastSummary: "\u21912 \u21931", synced: { "/v/Zeta": d } })
   const config = Safe.repoConfig(text)
@@ -285,4 +147,60 @@ test("the repository file keeps when each repository and vault last synced", () 
   for (const bad of ["", "yesterday", "2026-09-23", "2026-13-40T99:99:99Z", 5])
     assert.equal(Safe.cleanTime(bad), "", String(bad))
   assert.equal(Safe.lastSyncFor(Safe.repoConfig('{"repos":{"https://github.com/a/b":{"vaults":[],"lastSync":"soon"}}}'), "https://github.com/a/b"), null)
+})
+
+test("the repository in use is kept in the file, and can be cleared", () => {
+  let config = Safe.repoConfig("")
+  config = Safe.repoConfig(Safe.repoConfigText(config, "", null, "https://github.com/chyld/notes/"))
+  assert.equal(config.current, "https://github.com/chyld/notes")
+  // Changing an entry leaves the repository in use alone.
+  config = Safe.repoConfig(Safe.repoConfigText(config, "https://github.com/chyld/other", { vaults: ["/v/A"] }))
+  assert.equal(config.current, "https://github.com/chyld/notes")
+  config = Safe.repoConfig(Safe.repoConfigText(config, "", null, ""))
+  assert.equal(config.current, "")
+  assert.equal(Safe.repoConfig('{"current":"http://evil.example/x"}').current, "")
+})
+
+test("engine lines are validated before use", () => {
+  const vaults = ["/v/Alpha"]
+  assert.equal(Safe.engineEvent("not json", vaults), null)
+  assert.equal(Safe.engineEvent('{"event":"step","vault":"/v/Other","text":"x"}', vaults), null)
+  assert.equal(Safe.engineEvent('{"event":"rm -rf","vault":"/v/Alpha"}', vaults), null)
+  assert.deepEqual({ ...Safe.engineEvent('{"event":"end"}', vaults) }, { event: "end" })
+  const step = Safe.engineEvent('{"event":"step","vault":"/v/Alpha","text":"Merging\u202e<b>"}', vaults)
+  assert.equal(step.text, "Merging<b>")
+  const done = Safe.engineEvent(JSON.stringify({ event: "done", vault: "/v/Alpha", sent: 3, received: -1,
+    conflicts: ["todo.md", "../x", "/etc/passwd", 5], warnings: Array(50).fill("big.bin") }), vaults)
+  assert.equal(done.sent, 3)
+  assert.equal(done.received, 0)
+  assert.deepEqual([...done.conflicts], ["todo.md"])
+  assert.equal(done.warnings.length, 20)
+  const st = Safe.engineEvent(JSON.stringify({ event: "status", vault: "/v/Alpha", isRepo: "yes", changes: 1e99,
+    unpushed: 2, conflictCopies: [], conflictCount: 4, lastPushed: 1790000000 }), vaults)
+  assert.equal(st.isRepo, false)
+  assert.equal(st.changes, 0)
+  assert.equal(st.conflictCount, 4)
+  assert.equal(st.lastPushed.getTime(), 1790000000 * 1000)
+  assert.equal(Safe.engineEvent('{"event":"error","vault":"/v/Alpha"}', vaults).message, "Sync failed.")
+})
+
+test("summary says what a sync moved", () => {
+  assert.equal(Safe.summary(3, 2, 0), "\u21913 \u21932")
+  assert.equal(Safe.summary(0, 0, 1), "1 kept twice")
+  assert.equal(Safe.summary(0, 0, 0), "no changes")
+})
+
+test("the engine and helpers run from the system Python in isolated mode", () => {
+  assert.deepEqual([...Commands.status("/p/engine.py", "", ["/v/A"])],
+                   ["/usr/bin/python3", "-I", "-S", "/p/engine.py", "status", "-", "--", "/v/A"])
+  assert.deepEqual([...Commands.sync("/p/engine.py", "https://github.com/chyld/notes", ["/v/A", "/v/B"])],
+                   ["/usr/bin/python3", "-I", "-S", "/p/engine.py", "sync", "https://github.com/chyld/notes.git", "--", "/v/A", "/v/B"])
+  assert.equal(Commands.sync("/p/engine.py", "http://evil.example/x", ["/v/A"]), null)
+  assert.deepEqual([...Commands.readFile("/p/files.py", "repos")], ["/usr/bin/python3", "-I", "-S", "/p/files.py", "read", "repos"])
+  const curl = [...Commands.visibility("https://github.com/chyld/notes")]
+  assert.equal(curl[1], "-q")
+  assert.ok(!curl.includes("-L"))
+  assert.deepEqual(curl.slice(-2), ["--", "https://api.github.com/repos/chyld/notes"])
+  assert.deepEqual([...Commands.openUrl("/usr/share/omarchy", "https://github.com/chyld/notes.git")],
+                   ["/usr/share/omarchy/bin/omarchy-launch-browser", "https://github.com/chyld/notes"])
 })

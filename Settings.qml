@@ -1,14 +1,13 @@
 import QtQuick
 import qs.Commons
 import qs.Ui
-import "Defaults.js" as Defaults
 import "Safe.js" as Safe
 
 // Bar icon for Vault Sync. The icon shows the sync state; clicking it opens
 // a popup with the status, the repository, and under it the tree of vaults
-// synced to it.
-// Settings are saved on this widget's entry in shell.json through the host
-// and handed straight to the sync service (pushToService).
+// synced to it. Everything shown comes from the sync service, and every
+// change goes through it: the popup keeps no settings of its own, so the
+// popups on several monitors always agree.
 Panel {
   id: root
   moduleName: "chyld.vault-sync"
@@ -39,36 +38,12 @@ Panel {
 
   readonly property string phase: root.service ? root.service.phase : "setup"
 
-  function value(key) {
-    return root.setting(key, Defaults.values[key])
+  onOpenedChanged: {
+    if (!opened || !root.service) return
+    root.service.refresh()
+    root.service.checkVisibility()
+    urlField.text = Safe.repoPage(root.service.repoUrl)
   }
-
-  // shell.json keeps only the repository URL; the vaults ticked for each
-  // repository live in the service's own file (keys older versions saved
-  // here are dropped).
-  function set(key, v) {
-    var next = {}
-    for (var k in root.settings)
-      if (k !== "vault" && k !== "vaults") next[k] = root.settings[k]
-    next[key] = v
-    root.settings = next
-    saveTimer.restart()
-  }
-
-  Timer {
-    id: saveTimer
-    interval: 200
-    onTriggered: if (root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName, root.settings)
-  }
-
-  function pushToService() {
-    if (root.service && "pushedSettings" in root.service) root.service.pushedSettings = root.settings
-  }
-
-  onSettingsChanged: pushToService()
-  onServiceChanged: pushToService()
-
-  onOpenedChanged: if (opened && root.service) { root.service.refresh(); root.service.checkVisibility() }
 
   // ------------------------------------------------------------ state text
 
@@ -88,15 +63,29 @@ Panel {
   // its normal form, which is left for when typing has finished.
   function commitUrl(tidy) {
     urlSave.stop()
+    if (!root.service) return
     var typed = urlField.text
-    var url = Safe.repoUrl(typed)
-    if (url) {
-      var page = Safe.repoPage(url)
-      if (page !== root.value("repoUrl")) root.set("repoUrl", page)
+    var page = Safe.repoPage(typed)
+    if (page) {
+      root.service.setRepoUrl(page)
       if (tidy && typed !== page) urlField.text = page
-    } else if (typed.trim() === "" && root.value("repoUrl") !== "") {
-      root.set("repoUrl", "")
+    } else if (typed.trim() === "") {
+      root.service.setRepoUrl("")
+    } else {
+      return
     }
+    root.dropLegacySettings()
+  }
+
+  // Older versions kept the URL on this widget's entry in shell.json. The
+  // service now keeps it in its own file, so the old key is removed once a
+  // URL has been set here.
+  function dropLegacySettings() {
+    var legacy = false
+    for (var k in root.settings) if (k !== "id") legacy = true
+    if (!legacy || !root.bar || !root.bar.shell) return
+    root.settings = ({})
+    root.bar.shell.updateEntryInline(root.moduleName, {})
   }
 
   Timer {
@@ -144,11 +133,11 @@ Panel {
     case "syncing": return { text: "syncing…", color: Color.accent }
     case "error": return { text: "failed", color: Color.urgent }
     case "conflict":
-      var c = st.conflictCopies.length
+      var c = st.conflictCount
       return { text: c + (c === 1 ? " conflict" : " conflicts"), color: Color.urgent }
     case "changes":
       if (!st.isRepo || !st.lastPushed) return { text: "never synced", color: root.dirtyColor }
-      if (st.changes.length > 0) return { text: st.changes.length + " changed", color: root.dirtyColor }
+      if (st.changes > 0) return { text: st.changes + " changed", color: root.dirtyColor }
       return { text: st.unpushed + " to send", color: root.dirtyColor }
     default:
       var when = s.vaultSynced(path)
@@ -392,7 +381,7 @@ Panel {
             placeholderText: "https://github.com/you/notes"
             maximumLength: 200
             foreground: root.barForeground
-            text: String(root.value("repoUrl") || "")
+            text: root.service ? Safe.repoPage(root.service.repoUrl) : ""
             // The field keeps what was typed; only a valid URL is saved.
             property bool invalid: text.trim() !== "" && Safe.repoUrl(text) === ""
             // Saved shortly after typing stops, when focus leaves, and
