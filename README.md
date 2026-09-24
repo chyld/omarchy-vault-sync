@@ -1,10 +1,45 @@
-# Vault Sync
+<p align="center">
+  <img src="icon.svg" alt="Vault Sync" width="112">
+</p>
 
-**Sync your Obsidian vault with GitHub from the Omarchy bar.**
+<h1 align="center">Vault Sync</h1>
 
-Click the cloud icon, then **Sync now**. Vault Sync commits your notes, brings
-in what your other devices pushed, and pushes the result. Nothing touches the
-network until you press the button.
+<p align="center">
+  <b>Every Obsidian vault, safe on GitHub in one click.</b><br>
+  Obsidian sync, right in the <a href="https://omarchy.org">Omarchy</a> bar.
+</p>
+
+<p align="center">
+  <kbd>Sync now</kbd> &nbsp;·&nbsp; many vaults, one repo &nbsp;·&nbsp; conflicts kept &nbsp;·&nbsp; never force-pushes &nbsp;·&nbsp; your own gh login
+</p>
+
+<p align="center">
+  <img src="preview.png" alt="Vault Sync: the popup with a GitHub repository at the top and a tree of Obsidian vaults under it, next to the repository's Vaults folder" width="900">
+</p>
+
+---
+
+**Your notes live in Obsidian. Your backups shouldn't live in your head.** Did
+you push the work vault last night? Is the laptop's copy newer than the
+desktop's? Stop guessing.
+
+**Click the shard in the bar.** Your GitHub repository sits at the top, with
+every Obsidian vault in a tree under it. Tick the ones that belong there.
+
+**Press Sync now.** Each ticked vault commits its notes, brings in what your
+other machines pushed, and sends the result back, into its own
+`Vaults/<name>/` folder. The shard turns yellow when notes change and back to
+your accent color once they're safe.
+
+## Why you'll keep it
+
+- ☁️ **One click, every vault.** Sync now walks through every ticked vault; if one fails, the others still sync.
+- 🌳 **One repo, many vaults.** Each vault gets its own `Vaults/<name>/` folder, so nothing mixes. Each repository remembers its own vaults.
+- 🧩 **Know it at a glance.** The bar icon turns yellow when notes changed, and each vault's row says *synced 14:05*, *2 changed* or *failed*.
+- 🤝 **Conflicts kept, never lost.** Edited the same note on two machines? GitHub's version keeps the name and yours is saved beside it as `note (conflict …).md`.
+- 🛡️ **Never rewrites history.** It merges, never force-pushes, never resets.
+- 🎨 **Matches your theme.** Colors and fonts come from your current Omarchy theme.
+- 🔒 **Your own login.** Git signs in with your existing `gh` login; the plugin never sees a token. Details [below](#what-vault-sync-does-on-your-system).
 
 ## Install
 
