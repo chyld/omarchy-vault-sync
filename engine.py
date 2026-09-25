@@ -542,23 +542,23 @@ class Sync:
     def filter_tree(self, tree):
         """A tree with .obsidian and .trash removed: the remote's tree,
         filtered so those folders can never arrive from GitHub. Returns the
-        filtered tree's SHA-1, or "" when nothing is left."""
+        filtered tree's object ID, including when the tree is empty.
+        Any git failure aborts the sync before it can push stale local data."""
         git = self.git
         gitdir = git.text("rev-parse", "--absolute-git-dir")
         env = git_env()
         env["GIT_INDEX_FILE"] = os.path.join(gitdir, "vault-sync-filter")
-        try:
-            # Read the remote tree into a temporary index.
-            git.ok("read-tree", tree, env=env)
-            # Remove .obsidian and .trash at the top level. git rm -r removes
-            # a directory and everything under it, so .obsidian/app.json,
-            # .obsidian/plugins/... etc. are all removed.
-            git.ok("rm", "-r", "-q", "--cached", "--ignore-unmatch", "--",
-                   ":(top,literal).obsidian", ":(top,literal).trash", env=env)
-            # Write the filtered tree.
-            return git.text("write-tree", env=env)
-        except Failure:
-            return ""
+        # Read the remote tree into a temporary index.
+        git.ok("read-tree", tree, env=env)
+        # Remove .obsidian and .trash at the top level. git rm -r removes
+        # a directory and everything under it, so .obsidian/app.json,
+        # .obsidian/plugins/... etc. are all removed. Force removal from
+        # this temporary index even when local settings differ; --cached
+        # leaves the working tree untouched.
+        git.ok("rm", "-r", "-f", "-q", "--cached", "--ignore-unmatch", "--",
+               ":(top,literal).obsidian", ":(top,literal).trash", env=env)
+        # Write the filtered tree.
+        return git.text("write-tree", env=env)
 
     def merge_incoming(self, tip):
         """GitHub's copy of this vault's folder, as a commit on top of the last
@@ -579,9 +579,6 @@ class Sync:
         # .obsidian and .trash (which must never come from GitHub), and
         # write the filtered tree.
         filtered = self.filter_tree(theirs)
-        if not filtered:
-            return                                   # nothing left after filtering
-        
         commit = git.text("commit-tree", filtered, *(["-p", base] if base else []),
                           "-m", f"Sync: {self.folder} on GitHub")
         self.step("Merging")
