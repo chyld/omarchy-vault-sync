@@ -241,6 +241,94 @@ class EngineTest(unittest.TestCase):
         for bad in ["", "/etc/passwd", "../x", "a//b", ".git/config", "a\nb"]:
             self.assertEqual(engine.rel_path(bad), "", bad)
 
+    # ------------------------------------------------------------ security
+
+    def test_obsidian_folder_from_remote_is_never_merged(self):
+        """A remote commit with .obsidian files must not place them in the
+        local vault. The rest of the commit still merges."""
+        alpha = self.vault("Alpha", {"note.md": "safe"})
+        self.result("sync", alpha)
+        # Another machine pushes .obsidian/app.json and a plugin, plus a note.
+        other = self.vault("m2/Alpha")
+        self.result("sync", other)
+        os.makedirs(os.path.join(other, ".obsidian", "plugins", "evil"))
+        with open(os.path.join(other, ".obsidian", "app.json"), "w") as f:
+            f.write('{"malicious": true}')
+        with open(os.path.join(other, ".obsidian", "plugins", "evil", "main.js"), "w") as f:
+            f.write("console.log('evil')")
+        with open(os.path.join(other, "legitimate.md"), "w") as f:
+            f.write("This note is fine.")
+        self.result("sync", other)
+        # The first machine syncs: the note arrives, .obsidian does not.
+        done = self.result("sync", alpha)
+        self.assertEqual(done["received"], 1, "legitimate.md arrived")
+        self.assertEqual(self.read(alpha, "legitimate.md"), "This note is fine.")
+        self.assertFalse(os.path.exists(os.path.join(alpha, ".obsidian", "app.json")))
+        self.assertFalse(os.path.exists(os.path.join(alpha, ".obsidian", "plugins")))
+
+    def test_obsidian_as_a_file_from_remote_is_rejected(self):
+        """If the remote has .obsidian as a plain file (not a directory), it
+        must not land locally."""
+        alpha = self.vault("Alpha", {"note.md": "1"})
+        self.result("sync", alpha)
+        other = self.vault("m2/Alpha")
+        self.result("sync", other)
+        with open(os.path.join(other, ".obsidian"), "w") as f:
+            f.write("not a directory")
+        with open(os.path.join(other, "safe.md"), "w") as f:
+            f.write("safe")
+        self.result("sync", other)
+        self.result("sync", alpha)
+        self.assertFalse(os.path.exists(os.path.join(alpha, ".obsidian")))
+        self.assertTrue(os.path.exists(os.path.join(alpha, "safe.md")))
+
+    def test_trash_folder_from_remote_is_never_merged(self):
+        """Like .obsidian, .trash must not arrive from the remote."""
+        alpha = self.vault("Alpha", {"note.md": "1"})
+        self.result("sync", alpha)
+        other = self.vault("m2/Alpha")
+        self.result("sync", other)
+        os.makedirs(os.path.join(other, ".trash"))
+        with open(os.path.join(other, ".trash", "deleted.md"), "w") as f:
+            f.write("deleted")
+        with open(os.path.join(other, "kept.md"), "w") as f:
+            f.write("kept")
+        self.result("sync", other)
+        self.result("sync", alpha)
+        self.assertFalse(os.path.exists(os.path.join(alpha, ".trash")))
+        self.assertTrue(os.path.exists(os.path.join(alpha, "kept.md")))
+
+    def test_deeply_nested_obsidian_paths_are_filtered(self):
+        """Nested .obsidian paths must be filtered too."""
+        alpha = self.vault("Alpha", {"a.md": "1"})
+        self.result("sync", alpha)
+        other = self.vault("m2/Alpha")
+        self.result("sync", other)
+        os.makedirs(os.path.join(other, ".obsidian", "plugins", "deep", "nested"))
+        with open(os.path.join(other, ".obsidian", "plugins", "deep", "nested", "bad.js"), "w") as f:
+            f.write("bad")
+        with open(os.path.join(other, "good.md"), "w") as f:
+            f.write("good")
+        self.result("sync", other)
+        self.result("sync", alpha)
+        self.assertFalse(os.path.exists(os.path.join(alpha, ".obsidian")))
+        self.assertTrue(os.path.exists(os.path.join(alpha, "good.md")))
+
+    def test_files_named_obsidian_in_subdirs_are_allowed(self):
+        """A file like notes/.obsidian (not at the top) is a regular note and
+        should sync normally."""
+        alpha = self.vault("Alpha", {"a.md": "1"})
+        self.result("sync", alpha)
+        other = self.vault("m2/Alpha")
+        self.result("sync", other)
+        os.makedirs(os.path.join(other, "notes"))
+        with open(os.path.join(other, "notes", ".obsidian"), "w") as f:
+            f.write("This is just a note with an unusual name.")
+        self.result("sync", other)
+        self.result("sync", alpha)
+        self.assertTrue(os.path.exists(os.path.join(alpha, "notes", ".obsidian")))
+        self.assertEqual(self.read(alpha, "notes/.obsidian"), "This is just a note with an unusual name.")
+
 
 if __name__ == "__main__":
     unittest.main()
