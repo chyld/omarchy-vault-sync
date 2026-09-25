@@ -124,7 +124,10 @@ name. On your computer nothing changes: the notes stay at the top of the vault.
 It never force-pushes, never resets and never rewrites history.
 
 **Notes only.** Obsidian's `.obsidian` folder (settings, plugins, workspace
-layout) and `.trash` stay on this machine.
+layout) and `.trash` stay on this machine. These folders are excluded from
+both local commits and incoming merges: they are never pushed to GitHub, and
+if they appear in the repository (from another tool or a repository
+contributor), they are filtered out and never written to the vault.
 
 ## Conflicts: both versions are kept
 

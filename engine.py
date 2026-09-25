@@ -539,10 +539,34 @@ class Sync:
             raise Failure("Too large for GitHub (over 100 MB): " + ", ".join(too_big[:3]) +
                           (" and more" if len(too_big) > 3 else ""))
 
+    def filter_tree(self, tree):
+        """A tree with .obsidian and .trash removed: the remote's tree,
+        filtered so those folders can never arrive from GitHub. Returns the
+        filtered tree's SHA-1, or "" when nothing is left."""
+        git = self.git
+        gitdir = git.text("rev-parse", "--absolute-git-dir")
+        env = git_env()
+        env["GIT_INDEX_FILE"] = os.path.join(gitdir, "vault-sync-filter")
+        try:
+            # Read the remote tree into a temporary index.
+            git.ok("read-tree", tree, env=env)
+            # Remove .obsidian and .trash at the top level. git rm -r removes
+            # a directory and everything under it, so .obsidian/app.json,
+            # .obsidian/plugins/... etc. are all removed.
+            git.ok("rm", "-r", "-q", "--cached", "--ignore-unmatch", "--",
+                   ":(top,literal).obsidian", ":(top,literal).trash", env=env)
+            # Write the filtered tree.
+            return git.text("write-tree", env=env)
+        except Failure:
+            return ""
+
     def merge_incoming(self, tip):
         """GitHub's copy of this vault's folder, as a commit on top of the last
         sync, so a normal merge brings in exactly what changed there. Before
-        the first sync it has no parent, and the merge joins the two."""
+        the first sync it has no parent, and the merge joins the two.
+        
+        .obsidian and .trash are excluded from the incoming tree: a repository
+        contributor or compromised remote cannot place them in the vault."""
         git = self.git
         theirs = git.maybe("rev-parse", "-q", "--verify", f"{tip}:{self.folder}")
         if not theirs:
@@ -550,7 +574,15 @@ class Sync:
         base = git.maybe("rev-parse", "-q", "--verify", self.refs + "/base^{commit}")
         if base and git.text("rev-parse", base + "^{tree}") == theirs:
             return                                   # unchanged since the last sync
-        commit = git.text("commit-tree", theirs, *(["-p", base] if base else []),
+        
+        # Filter the remote tree: read it into a temporary index, remove
+        # .obsidian and .trash (which must never come from GitHub), and
+        # write the filtered tree.
+        filtered = self.filter_tree(theirs)
+        if not filtered:
+            return                                   # nothing left after filtering
+        
+        commit = git.text("commit-tree", filtered, *(["-p", base] if base else []),
                           "-m", f"Sync: {self.folder} on GitHub")
         self.step("Merging")
         self.merging = self.merged = True
