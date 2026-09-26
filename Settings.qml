@@ -556,6 +556,78 @@ Panel {
           }
         }
 
+        // ---------------------------------------------------------- auto-sync
+
+        Rectangle {
+          width: parent.width
+          height: 1
+          color: Util.alpha(root.barForeground, 0.10)
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(4)
+
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Button {
+              id: autoSyncToggle
+              width: parent.width
+              readonly property bool on: root.settings && root.settings.autoSync === true
+              text: on ? "Auto sync on" : "Auto sync off"
+              iconText: on ? "\u{f0132}" : "\u{f0131}"
+              bordered: true
+              selected: on
+              foreground: root.barForeground
+              onClicked: {
+                var nextOn = !autoSyncToggle.on
+                var next = {}
+                for (var k in root.settings) next[k] = root.settings[k]
+                next.autoSync = nextOn
+                root.settings = next
+                if (root.bar && root.bar.shell)
+                  root.bar.shell.updateEntryInline(root.moduleName, { autoSync: nextOn })
+              }
+            }
+          }
+
+          Row {
+            visible: root.settings && root.settings.autoSync === true
+            width: parent.width
+            spacing: Style.space(4)
+
+            readonly property var labels: ["5m", "15m", "30m", "1h", "4h"]
+            readonly property int current: {
+              var idx = root.settings && typeof root.settings.autoSyncInterval === "number"
+                ? root.settings.autoSyncInterval : 2
+              return idx >= 0 && idx <= 4 ? idx : 2
+            }
+
+            Repeater {
+              model: parent.labels
+
+              Button {
+                required property var modelData
+                required property int index
+                text: modelData
+                bordered: true
+                selected: index === parent.current
+                foreground: root.barForeground
+                onClicked: {
+                  var next = {}
+                  for (var k in root.settings) next[k] = root.settings[k]
+                  next.autoSyncInterval = index
+                  root.settings = next
+                  if (root.bar && root.bar.shell)
+                    root.bar.shell.updateEntryInline(root.moduleName, { autoSyncInterval: index })
+                }
+              }
+            }
+          }
+        }
+
         Caption {
           text: "Syncs to Vaults/<name>/ \u00b7 .obsidian stays local"
           color: Util.alpha(root.barForeground, 0.75)

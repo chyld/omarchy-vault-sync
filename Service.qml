@@ -411,4 +411,57 @@ Item {
     var argv = Commands.openUrl(sync.omarchyRoot, sync.repoUrl)
     if (argv) Quickshell.execDetached(argv)
   }
+
+  // ------------------------------------------------------------ auto-sync
+
+  // Read autoSync settings from the bar widget's config
+  readonly property bool autoSync: {
+    var cfg = sync.shell && sync.shell.barConfig ? sync.shell.barConfig : null
+    var layout = cfg && cfg.layout ? cfg.layout : null
+    var sections = ["left", "center", "right"]
+    for (var s = 0; layout && s < sections.length; s++) {
+      var list = layout[sections[s]]
+      for (var i = 0; Array.isArray(list) && i < list.length && i < 200; i++) {
+        var entry = list[i]
+        if (entry && typeof entry === "object" && entry.id === sync.pluginId)
+          return entry.autoSync === true
+      }
+    }
+    return false
+  }
+
+  readonly property int autoSyncIntervalIndex: {
+    var cfg = sync.shell && sync.shell.barConfig ? sync.shell.barConfig : null
+    var layout = cfg && cfg.layout ? cfg.layout : null
+    var sections = ["left", "center", "right"]
+    for (var s = 0; layout && s < sections.length; s++) {
+      var list = layout[sections[s]]
+      for (var i = 0; Array.isArray(list) && i < list.length && i < 200; i++) {
+        var entry = list[i]
+        if (entry && typeof entry === "object" && entry.id === sync.pluginId) {
+          var idx = typeof entry.autoSyncInterval === "number" ? Math.floor(entry.autoSyncInterval) : 2
+          return idx >= 0 && idx <= 4 ? idx : 2
+        }
+      }
+    }
+    return 2
+  }
+
+  readonly property var autoSyncIntervals: [300000, 900000, 1800000, 3600000, 14400000]
+  readonly property int autoSyncMs: sync.autoSyncIntervals[sync.autoSyncIntervalIndex] || 1800000
+
+  onAutoSyncChanged: autoSyncTimer.restart()
+  onAutoSyncMsChanged: { autoSyncTimer.interval = sync.autoSyncMs; autoSyncTimer.restart() }
+
+  // Auto-sync timer
+  Timer {
+    id: autoSyncTimer
+    interval: sync.autoSyncMs
+    repeat: true
+    running: sync.autoSync && sync.configured && !sync.syncing
+    onTriggered: {
+      if (sync.configured && !sync.syncing)
+        sync.start()
+    }
+  }
 }
