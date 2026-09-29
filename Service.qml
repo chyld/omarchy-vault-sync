@@ -172,16 +172,23 @@ Item {
     sync.writeRepoConfig(Safe.repoConfigText(sync.repoConfig, "", null, page))
   }
 
-  // The vaults ticked for the repository in use.
+  // The vaults ticked for the repository in use, and whether that
+  // repository's root holds the vault itself (one vault) rather than a
+  // Vaults/<name> folder in it.
   readonly property var selected: Safe.selectionFor(sync.repoConfig, sync.repoUrl)
+  readonly property bool rootLayout: Safe.rootLayoutFor(sync.repoConfig, sync.repoUrl)
   readonly property bool configured: sync.repoUrl !== "" && sync.selected.length > 0
 
   function toggleVault(path) {
     if (!sync.repoUrl || sync.syncing || !Safe.vaultPath(path)) return
     var list = sync.selected.slice()
     var i = list.indexOf(path)
-    if (i === -1) list.push(path)
-    else list.splice(i, 1)
+    if (i === -1) {
+      // The repository's root holds the vault itself: there is no
+      // Vaults/<name> folder to keep a second one apart in.
+      if (sync.rootLayout && list.length > 0) return
+      list.push(path)
+    } else list.splice(i, 1)
     sync.writeRepoConfig(Safe.repoConfigText(sync.repoConfig, sync.repoUrl, { vaults: list }))
   }
 
@@ -274,7 +281,7 @@ Item {
     if (vaults.length === 0) return
     if (local.running) { sync.refreshAgain = true; return }
     var url = sync.repoUrl
-    local.run(Commands.status(sync.engineScript, url, vaults), 300000, function() {
+    local.run(Commands.status(sync.engineScript, url, vaults, sync.rootLayout), 300000, function() {
       if (sync.refreshAgain) { sync.refreshAgain = false; Qt.callLater(sync.refresh) }
     }, null, function(line) {
       var e = Safe.engineEvent(line, vaults)
@@ -343,7 +350,7 @@ Item {
   // doesn't stop the others; each keeps its own error until its next sync.
   function start() {
     var vaults = sync.selected.slice()
-    var argv = Commands.sync(sync.engineScript, sync.repoUrl, vaults)
+    var argv = Commands.sync(sync.engineScript, sync.repoUrl, vaults, sync.rootLayout)
     if (sync.syncing || runner.running || !sync.configured || !argv || !sync.engineScript) return
     sync.syncing = true
     sync.activity = []

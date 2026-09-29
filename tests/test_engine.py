@@ -49,17 +49,17 @@ class EngineTest(unittest.TestCase):
                 f.write(text)
         return path
 
-    def engine(self, op, *vaults, url=URL):
+    def engine(self, op, *vaults, url=URL, root=False):
         env = {"HOME": self.home, "PATH": "/usr/bin:/bin"}
-        out = subprocess.run(["/usr/bin/python3", "-I", "-S", ENGINE, op, url, "--", *vaults],
-                             env=env, capture_output=True, timeout=120)
+        argv = ["/usr/bin/python3", "-I", "-S", ENGINE, op, url] + (["--root"] if root else []) + ["--", *vaults]
+        out = subprocess.run(argv, env=env, capture_output=True, timeout=120)
         self.assertEqual(out.returncode, 0, out.stderr.decode())
         events = [json.loads(line) for line in out.stdout.decode().splitlines()]
         self.assertEqual(events[-1], {"event": "end"})
         return events[:-1]
 
-    def result(self, op, vault, url=URL):
-        events = [e for e in self.engine(op, vault, url=url) if e["event"] != "step"]
+    def result(self, op, vault, url=URL, root=False):
+        events = [e for e in self.engine(op, vault, url=url, root=root) if e["event"] != "step"]
         self.assertEqual(len(events), 1, events)
         return events[0]
 
@@ -211,6 +211,137 @@ class EngineTest(unittest.TestCase):
         self.assertEqual((done["sent"], done["received"]), (0, 0))
         self.assertEqual(self.remote_files(), head)
 
+    def test_a_gitignore_that_ignores_obsidian_does_not_fail_the_add(self):
+        alpha = self.vault("Alpha", {"todo.md": "a\n", ".obsidian/app.json": '{"a": 1}',
+                                     ".obsidian/community-plugins.json": "[]", ".trash/gone.md": "x"})
+        # Obsidian's own .gitignore, which ignores .obsidian and lets three of
+        # its files through: naming .obsidian in an exclude pathspec fails
+        # this add outright.
+        with open(os.path.join(alpha, ".gitignore"), "w") as f:
+            f.write(".obsidian/\n!.obsidian/community-plugins.json\n")
+        self.result("sync", alpha)
+        self.assertEqual(self.remote_files(), ["Vaults/Alpha/.gitignore", "Vaults/Alpha/todo.md"])
+        # A later change to a file .obsidian still tracks is never committed.
+        with open(os.path.join(alpha, ".obsidian/community-plugins.json"), "w") as f:
+            f.write('["tagfolder"]')
+        with open(os.path.join(alpha, "todo.md"), "w") as f:
+            f.write("b\n")
+        self.result("sync", alpha)
+        self.assertEqual(self.remote_files(), ["Vaults/Alpha/.gitignore", "Vaults/Alpha/todo.md"])
+        self.assertEqual(self.remote_git("show", "main:Vaults/Alpha/todo.md"), "b")
+        self.assertEqual(self.read(alpha, ".obsidian/community-plugins.json"), '["tagfolder"]')
+
+    def test_an_ignored_file_is_left_alone(self):
+        alpha = self.vault("Alpha", {"todo.md": "a\n"})
+        with open(os.path.join(alpha, ".gitignore"), "w") as f:
+            f.write("secret.md\n")
+        self.result("sync", alpha)
+        self.assertEqual(self.remote_files(), ["Vaults/Alpha/.gitignore", "Vaults/Alpha/todo.md"])
+        with open(os.path.join(alpha, "secret.md"), "w") as f:
+            f.write("still mine\n")
+        self.result("sync", alpha)
+        self.assertEqual(self.remote_files(), ["Vaults/Alpha/.gitignore", "Vaults/Alpha/todo.md"])
+
+    def commit_obsidian(self, vault, *paths):
+        """Track .obsidian/.trash in the vault's own history, the way a vault
+        set up by hand has them, and give them content."""
+        env = {"HOME": self.home, "PATH": "/usr/bin:/bin"}
+        for rel in paths:
+            full = os.path.join(vault, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w") as f:
+                f.write("mine\n")
+        subprocess.run(["/usr/bin/git", "-C", vault, "init", "-q", "-b", "main"], check=True)
+        subprocess.run(["/usr/bin/git", "-C", vault, "add", "-A", "-f", "--", *paths],
+                       env=env, check=True, capture_output=True)
+        subprocess.run(["/usr/bin/git", "-C", vault, "commit", "-qm", "Track Obsidian's own files"],
+                       env=env, check=True, capture_output=True)
+
+    def test_repeated_syncs_never_take_obsidian_out_of_the_vault(self):
+        for root in (False, True):
+            with self.subTest(root=root):
+                self.setUp()
+                try:
+                    alpha = self.vault("Alpha", {"todo.md": "a\n"})
+                    self.commit_obsidian(alpha, ".obsidian/app.json", ".trash/old.md")
+                    for i in range(3):
+                        with open(os.path.join(alpha, "todo.md"), "w") as f:
+                            f.write(f"note {i}\n")
+                        self.result("sync", alpha, root=root)
+                        self.assertTrue(os.path.exists(os.path.join(alpha, ".obsidian/app.json")),
+                                        f"sync {i + 1} removed .obsidian")
+                        self.assertTrue(os.path.exists(os.path.join(alpha, ".trash/old.md")),
+                                        f"sync {i + 1} removed .trash")
+                        self.assertEqual(self.read(alpha, "todo.md"), f"note {i}\n")
+                    self.assertEqual(self.remote_files(),
+                                     ["todo.md"] if root else ["Vaults/Alpha/todo.md"])
+                    # A change Obsidian makes to its own file is never pushed.
+                    with open(os.path.join(alpha, ".obsidian/app.json"), "w") as f:
+                        f.write("changed\n")
+                    self.result("sync", alpha, root=root)
+                    self.assertEqual(self.read(alpha, ".obsidian/app.json"), "changed\n")
+                    self.assertEqual(self.remote_files(),
+                                     ["todo.md"] if root else ["Vaults/Alpha/todo.md"])
+                finally:
+                    self.tearDown()
+
+    # ------------------------------------------------------------ root layout
+
+    def test_the_root_layout_pushes_the_vault_to_the_repository_root(self):
+        alpha = self.vault("Alpha", {"todo.md": "a", "sub/note.md": "n", ".obsidian/app.json": "{}"})
+        done = self.result("sync", alpha, root=True)
+        self.assertEqual((done["event"], done["sent"]), ("done", 2))
+        self.assertEqual(self.remote_files(), ["sub/note.md", "todo.md"])
+
+    def test_the_root_layout_never_pushes_obsidian_or_trash(self):
+        alpha = self.vault("Alpha", {"todo.md": "a", ".obsidian/app.json": "{}", ".trash/gone.md": "x"})
+        self.result("sync", alpha, root=True)
+        self.assertEqual(self.remote_files(), ["todo.md"])
+
+    def test_the_root_layout_takes_changes_from_the_repository_root(self):
+        alpha = self.vault("Alpha", {"todo.md": "a\n"})
+        self.result("sync", alpha, root=True)
+        self.push_remote_files({"todo.md": "theirs\n", "added.md": "new\n"})
+        done = self.result("sync", alpha, root=True)
+        self.assertEqual(done["received"], 2)
+        self.assertEqual(self.read(alpha, "todo.md"), "theirs\n")
+        self.assertEqual(self.read(alpha, "added.md"), "new\n")
+
+    def test_the_root_layout_keeps_both_versions_of_an_edited_note(self):
+        alpha = self.vault("Alpha", {"todo.md": "base\n"})
+        self.result("sync", alpha, root=True)
+        self.push_remote_files({"todo.md": "theirs\n"})
+        with open(os.path.join(alpha, "todo.md"), "w") as f:
+            f.write("mine\n")
+        done = self.result("sync", alpha, root=True)
+        self.assertEqual(done["conflicts"], ["todo.md"])
+        copy = [n for n in os.listdir(alpha) if n.startswith("todo (conflict ")]
+        self.assertEqual(self.read(alpha, "todo.md"), "theirs\n")
+        self.assertEqual(self.read(alpha, copy[0]), "mine\n")
+        self.assertIn(copy[0], self.remote_files())
+
+    def test_the_root_layout_will_not_push_over_what_the_vault_lacks(self):
+        alpha = self.vault("Alpha", {"todo.md": "a\n"})
+        self.result("sync", alpha, root=True)
+        job = engine.Sync(alpha, URL, lambda *_: None, root=True)
+        job.check_root(self.remote_git("rev-parse", "main"))   # the same tree: nothing to refuse
+        self.push_remote_files({"README.md": "not a note\n"})
+        subprocess.run(["/usr/bin/git", "-C", alpha, "fetch", "-q", "origin", "main"],
+                       env={"HOME": self.home, "PATH": "/usr/bin:/bin"}, check=True, capture_output=True)
+        with self.assertRaises(engine.Failure) as caught:
+            job.check_root(self.remote_git("rev-parse", "main"))
+        self.assertIn("README.md", str(caught.exception))
+        self.assertIn("README.md", self.remote_files(), "nothing was pushed")
+
+    def test_the_root_layout_takes_one_vault_only(self):
+        alpha = self.vault("Alpha", {"a.md": "1"})
+        beta = self.vault("Beta", {"b.md": "2"})
+        env = {"HOME": self.home, "PATH": "/usr/bin:/bin"}
+        rc = subprocess.run(["/usr/bin/python3", "-I", "-S", ENGINE, "sync", URL, "--root", "--", alpha, beta],
+                            env=env, capture_output=True).returncode
+        self.assertEqual(rc, 2)
+        self.assertEqual(self.remote_files(), [])
+
     # ------------------------------------------------------------ status
 
     def test_status_counts_changes_and_unsynced_commits(self):
@@ -245,7 +376,8 @@ class EngineTest(unittest.TestCase):
     def test_rejects_bad_arguments(self):
         env = {"HOME": self.home, "PATH": "/usr/bin:/bin"}
         for args in (["sync", "http://github.com/a/b", "--", "/tmp/x"], ["sync", URL, "--", "relative"],
-                     ["sync", URL, "--", "/tmp/x", "/tmp/x"], ["delete", URL, "--"], ["sync", URL, "/tmp/x"]):
+                     ["sync", URL, "--", "/tmp/x", "/tmp/x"], ["delete", URL, "--"], ["sync", URL, "/tmp/x"],
+                     ["sync", URL, "--root", "--"], ["sync", URL, "--root", "--", "/tmp/x", "/tmp/y"]):
             rc = subprocess.run(["/usr/bin/python3", "-I", "-S", ENGINE, *args], env=env,
                                 capture_output=True).returncode
             self.assertEqual(rc, 2, args)
@@ -259,6 +391,9 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(engine.sync_refs("https://github.com/chyld/.github.git"), "refs/vault-sync/chyld/_.github")
         self.assertEqual(engine.vault_folder("/home/u/My Notes"), "Vaults/My Notes")
         self.assertEqual(engine.vault_folder("/home/u/.hidden"), "")
+        self.assertIsNone(engine.sync_folder("/home/u/.hidden"), "no folder name to sync under")
+        self.assertEqual(engine.sync_folder("/home/u/.hidden", root=True), "")
+        self.assertEqual(engine.sync_folder("/home/u/My Notes", root=True), "")
         for bad in ["", "/etc/passwd", "../x", "a//b", ".git/config", "a\nb"]:
             self.assertEqual(engine.rel_path(bad), "", bad)
 

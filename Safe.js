@@ -167,13 +167,17 @@ function cleanTime(value) {
 // to each repository, and when each last synced.
 //   { "version": 1, "current": "https://github.com/<owner>/<repo>",
 //     "repos": { "https://github.com/<owner>/<repo>": {
-//       "vaults": [paths], "lastSync": time, "lastSummary": "\u21912 \u21931",
+//       "vaults": [paths], "layout": "root", "lastSync": time,
+//       "lastSummary": "\u21912 \u21931",
 //       "synced": { path: time } } } }
+// "layout": "root" means the repository's root holds the vault itself,
+// instead of a Vaults/<name> folder in it. Only one vault, then.
 // Read defensively: an unreadable file is an empty one, and an unreadable
 // field is left out.
 
 function repoEntry(raw) {
-  var entry = { vaults: cleanSelection(raw.vaults), lastSync: cleanTime(raw.lastSync),
+  var entry = { vaults: cleanSelection(raw.vaults), root: raw.layout === "root",
+                lastSync: cleanTime(raw.lastSync),
                 lastSummary: typeof raw.lastSummary === "string" ? plain(raw.lastSummary, 40) : "",
                 synced: Object.create(null) }
   var synced = raw.synced
@@ -223,6 +227,13 @@ function selectionFor(config, url) {
   return entry ? entry.vaults : []
 }
 
+// Whether the repository's root holds the vault itself, instead of a
+// Vaults/<name> folder in it. One repository can hold one vault that way.
+function rootLayoutFor(config, url) {
+  var entry = entryFor(config, url)
+  return !!(entry && entry.root)
+}
+
 // When Sync now last finished for a repository, and what it moved.
 function lastSyncFor(config, url) {
   var entry = entryFor(config, url)
@@ -241,7 +252,8 @@ function vaultSyncedFor(config, url, path) {
 
 // The file's text after `change` to `url`'s entry (any of vaults, lastSync,
 // lastSummary, synced, merged per vault) and, when `current` is a string,
-// with the repository in use set to it ("" for none).
+// with the repository in use set to it ("" for none). The layout is kept as
+// it is: only a hand-written "layout": "root" sets it.
 function repoConfigText(config, url, change, current) {
   var repos = {}
   var page = repoPage(url)
@@ -251,6 +263,7 @@ function repoConfigText(config, url, change, current) {
   for (var i = 0; i < pages.length; i++) {
     var old = config.repos[pages[i]] || repoEntry({})
     var entry = { vaults: old.vaults }
+    if (old.root) entry.layout = "root"
     if (old.lastSync) entry.lastSync = old.lastSync
     if (old.lastSummary) entry.lastSummary = old.lastSummary
     var synced = {}
