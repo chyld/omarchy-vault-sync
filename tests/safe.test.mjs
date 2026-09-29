@@ -161,6 +161,30 @@ test("the repository in use is kept in the file, and can be cleared", () => {
   assert.equal(Safe.repoConfig('{"current":"http://evil.example/x"}').current, "")
 })
 
+test("a repository can hold its vault at its root, and keeps that choice", () => {
+  const url = "https://github.com/chyld/notes"
+  assert.equal(Safe.rootLayoutFor(Safe.repoConfig(""), url), false)
+  assert.equal(Safe.rootLayoutFor(Safe.repoConfig(`{"repos":{"${url}":{"vaults":["/v/A"]}}}`), url), false)
+  assert.equal(Safe.rootLayoutFor(Safe.repoConfig(`{"repos":{"${url}":{"layout":"root"}}}`), url), true)
+  for (const bad of ["ROOT", "vaults", 1, true, null])
+    assert.equal(Safe.rootLayoutFor(Safe.repoConfig(`{"repos":{"${url}":{"layout":${JSON.stringify(bad)}}}}`), url), false)
+
+  // The layout survives every later write to the file.
+  let config = Safe.repoConfig(`{"repos":{"${url}":{"vaults":["/v/A"],"layout":"root"}}}`)
+  const d = new Date(2026, 8, 23, 22, 15, 4)
+  config = Safe.repoConfig(Safe.repoConfigText(config, url, { vaults: ["/v/A", "/v/B"] }))
+  assert.equal(Safe.rootLayoutFor(config, url), true)
+  config = Safe.repoConfig(Safe.repoConfigText(config, url, { lastSync: d, lastSummary: "\u21912 \u21931" }))
+  assert.equal(Safe.rootLayoutFor(config, url), true)
+  const written = JSON.parse(Safe.repoConfigText(config, url, { vaults: ["/v/A"] })).repos[url]
+  assert.equal(written.layout, "root")
+  assert.match(written.lastSync, /^2026-09-23T22:15:04[+-]\d{2}:\d{2}$/)
+  assert.deepEqual({ ...written, lastSync: null },
+                   { vaults: ["/v/A"], layout: "root", lastSync: null, lastSummary: "\u21912 \u21931" })
+  // Another repository is unaffected.
+  assert.equal(Safe.rootLayoutFor(config, "https://github.com/chyld/other"), false)
+})
+
 test("engine lines are validated before use", () => {
   const vaults = ["/v/Alpha"]
   assert.equal(Safe.engineEvent("not json", vaults), null)
@@ -195,6 +219,10 @@ test("the engine and helpers run from the system Python in isolated mode", () =>
                    ["/usr/bin/python3", "-I", "-S", "/p/engine.py", "status", "-", "--", "/v/A"])
   assert.deepEqual([...Commands.sync("/p/engine.py", "https://github.com/chyld/notes", ["/v/A", "/v/B"])],
                    ["/usr/bin/python3", "-I", "-S", "/p/engine.py", "sync", "https://github.com/chyld/notes.git", "--", "/v/A", "/v/B"])
+  assert.deepEqual([...Commands.status("/p/engine.py", "https://github.com/chyld/notes", ["/v/A"], true)],
+                   ["/usr/bin/python3", "-I", "-S", "/p/engine.py", "status", "https://github.com/chyld/notes.git", "--root", "--", "/v/A"])
+  assert.deepEqual([...Commands.sync("/p/engine.py", "https://github.com/chyld/notes", ["/v/A"], true)],
+                   ["/usr/bin/python3", "-I", "-S", "/p/engine.py", "sync", "https://github.com/chyld/notes.git", "--root", "--", "/v/A"])
   assert.equal(Commands.sync("/p/engine.py", "http://evil.example/x", ["/v/A"]), null)
   assert.deepEqual([...Commands.readFile("/p/files.py", "repos")], ["/usr/bin/python3", "-I", "-S", "/p/files.py", "read", "repos"])
   const curl = [...Commands.visibility("https://github.com/chyld/notes")]

@@ -96,6 +96,25 @@ for a repository (with at least one vault synced), and `synced` is when each
 vault last synced to it successfully.
 You can edit it by hand; Vault Sync picks up the change.
 
+### One vault in the repository's root
+
+A repository that is nothing but one vault doesn't need the `Vaults/<name>/`
+folder. Add `"layout": "root"` to its entry, and Vault Sync syncs the vault to
+the repository's root instead:
+
+```json
+"https://github.com/you/notes": {
+  "vaults": ["/home/you/Documents/Alpha"],
+  "layout": "root"
+}
+```
+
+One repository's root can hold one vault, so with this layout the popup offers
+only one. Nothing else may sit at the repository's root: if the repository
+holds a top-level entry the vault has no counterpart for, the sync stops and
+says so instead of pushing over it. `.obsidian` is never pushed, here as
+everywhere else, so it is removed from a repository that used to hold it.
+
 If the repository is public, the popup says so: anyone on the internet can read
 every note you sync.
 
@@ -111,6 +130,9 @@ Vaults/
 
 The folder is named after the vault's folder, so give each vault a distinct
 name. On your computer nothing changes: the notes stay at the top of the vault.
+With [`"layout": "root"`](#one-vault-in-the-repositorys-root) on the
+repository, the vault is the repository's root and there is no `Vaults/`
+folder at all.
 
 1. The first time, it runs `git init` in the vault and points `origin` at your repository.
 2. It commits your changes with a message like `Sync 2026-09-23 14:05 — 3 files changed`.
@@ -127,7 +149,10 @@ It never force-pushes, never resets and never rewrites history.
 layout) and `.trash` stay on this machine. These folders are excluded from
 both local commits and incoming merges: they are never pushed to GitHub, and
 if they appear in the repository (from another tool or a repository
-contributor), they are filtered out and never written to the vault.
+contributor), they are filtered out and never written to the vault. That
+holds for a vault whose own history tracks them, set up by hand before Vault
+Sync: they are kept out of what is pushed, and a sync never takes them out of
+the vault.
 
 ## Conflicts: both versions are kept
 
@@ -174,9 +199,9 @@ Middle-click the icon to sync without opening the popup.
   line, and Vault Sync never sees, stores or logs it.
 - **Files it writes:**
   - `~/.config/vault-sync/repos.json`: the repository in use, which vaults
-    sync to each repository, and when. Written by `files.py` at mode 0600 in a
-    0700 directory, through an exclusively created temporary that is renamed
-    into place.
+    sync to each repository, each repository's layout, and when. Written by
+    `files.py` at mode 0600 in a 0700 directory, through an exclusively
+    created temporary that is renamed into place.
   - Inside each ticked vault, only when you press Sync now: its `.git` folder
     (including two refs per repository under `refs/vault-sync/<owner>/<repo>/`
     and a separate index file, `.git/vault-sync-index`, used to build the

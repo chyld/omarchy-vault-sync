@@ -3,8 +3,8 @@
 
 Run by the shell as an argv array, never through a shell:
 
-    /usr/bin/python3 -I -S engine.py status <repo-url or -> -- <vault>...
-    /usr/bin/python3 -I -S engine.py sync   <repo-url>      -- <vault>...
+    /usr/bin/python3 -I -S engine.py status <repo-url or -> [--root] -- <vault>...
+    /usr/bin/python3 -I -S engine.py sync   <repo-url>      [--root] -- <vault>...
 
 It prints one JSON object per line, and nothing else on stdout:
 
@@ -17,10 +17,10 @@ It prints one JSON object per line, and nothing else on stdout:
     {"event": "end"}
 
 A sync commits the vault's notes, merges what other devices pushed to the
-vault's folder in the repository (Vaults/<name>/), and pushes the result. A
-note changed on both sides keeps GitHub's version under its name, and this
-machine's version is written beside it as "note (conflict <time>).md". It
-never force-pushes and never resets.
+vault's folder in the repository (Vaults/<name>/, or the repository's whole
+root with --root), and pushes the result. A note changed on both sides keeps
+GitHub's version under its name, and this machine's version is written beside
+it as "note (conflict <time>).md". It never force-pushes and never resets.
 
 Every git command runs in its own session under a deadline, and its output
 is read under a byte cap; overflow or the deadline stops the whole process
@@ -103,12 +103,21 @@ def vault_path(value):
     return s if len(s) > 1 else ""
 
 
-def vault_folder(path):
-    """Vaults/<name>: the vault's folder in the repository, or ""."""
+def sync_folder(path, root=False):
+    """Where the vault's notes live in the repository: "Vaults/<name>" for the
+    usual layout, "" when `root` puts the vault at the repository's root, or
+    None when the vault's folder name can't be used as one."""
+    if root:
+        return ""
     name = path.rsplit("/", 1)[-1]
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}", name) or name.endswith((" ", ".")):
-        return ""
+        return None
     return "Vaults/" + name
+
+
+def vault_folder(path):
+    """Vaults/<name>: the vault's folder in the repository, or ""."""
+    return sync_folder(path) or ""
 
 
 def rel_path(value):
@@ -401,11 +410,14 @@ def count_status(out):
 class Sync:
     """One vault synced with one repository."""
 
-    def __init__(self, vault, url, emit):
+    def __init__(self, vault, url, emit, root=False):
         self.vault = vault
         self.url = url
         self.refs = sync_refs(url)
-        self.folder = vault_folder(vault)
+        self.folder = sync_folder(vault, root)
+        # What this vault is called in a commit message and in errors. Only
+        # read once run() has rejected a folder name it can't use.
+        self.label = self.folder or "the repository's root"
         self.git = Git(vault)
         self.emit = emit
         self.when = time.localtime()
@@ -418,7 +430,7 @@ class Sync:
         self.emit({"event": "step", "vault": self.vault, "text": text})
 
     def run(self):
-        if not self.folder:
+        if self.folder is None:
             raise Failure("Rename the vault folder to letters, digits, spaces, dots, dashes or underscores.")
         git = self.git
 
@@ -451,7 +463,7 @@ class Sync:
 
         # 5. Commit this machine's changes, after checking their sizes.
         self.step("Saving your changes")
-        git.ok("add", "-A", *PATHSPEC)
+        self.stage()
         self.check_sizes()
         staged = git.paths("diff", "--cached", "--name-only", "-z")
         if staged:
@@ -478,7 +490,7 @@ class Sync:
                 break
             parents = ["-p", tip] if tip else []
             pushed = git.text("commit-tree", tree, *parents, "-m",
-                              f"Sync {self.folder} " + time.strftime("%Y-%m-%d %H:%M", self.when))
+                              f"Sync {self.label} " + time.strftime("%Y-%m-%d %H:%M", self.when))
             self.step("Sending to GitHub")
             code, _, err = git.run("push", "-q", "origin", f"{pushed}:refs/heads/{branch}", timeout=NETWORK)
             if code == 0:
@@ -506,6 +518,30 @@ class Sync:
             if m and branch_name(m.group(1)) and len(branches) < 1000:
                 branches.add(m.group(1))
         return head, branches
+
+    def stage(self):
+        """Stage this machine's changes, with .obsidian and .trash left as
+        HEAD has them: Obsidian's own folder and its trash are never synced.
+
+        They are put back after staging instead of being excluded from the
+        add's pathspec, because a .gitignore that ignores .obsidian while
+        letting some of its files through makes git fail the whole add when
+        that folder is named in an exclude pathspec."""
+        git = self.git
+        git.ok("add", "-A", "--", ":(top)")
+        # What the add put in the index under those two names, if anything: a
+        # pathspec that matches nothing is an error, and neither folder is
+        # tracked in most vaults.
+        out = git.ok("ls-files", "-z", "--", ":(top,literal).obsidian", ":(top,literal).trash", cap=KiB * KiB)
+        tracked = [p for p in out.decode("utf-8", "strict").split("\0") if p]
+        if not tracked:
+            return
+        if git.maybe("rev-parse", "-q", "--verify", "HEAD^{commit}"):
+            git.ok("restore", "-q", "--staged", "--", *tracked)
+        else:
+            # Nothing is committed yet, so leaving them out of the index is
+            # the same as leaving them out of the first commit.
+            git.ok("rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", *tracked)
 
     def check_sizes(self):
         """GitHub refuses files over 100 MB and warns over 50 MB. The sizes
@@ -560,15 +596,36 @@ class Sync:
         # Write the filtered tree.
         return git.text("write-tree", env=env)
 
+    def incoming_tree(self, base, theirs):
+        """The tree to merge: GitHub's filtered copy of the vault, with the
+        .obsidian and .trash the last sync left here put back.
+
+        They are in no copy on GitHub, and a merge reads a path that is in
+        the last sync and gone from the incoming side as a deletion, so
+        without this they would be taken out of the vault on the second sync.
+        Both are read as folders: a file of that name in the base (from an
+        older history, or another tool) is left to the merge like any other."""
+        git = self.git
+        gitdir = git.text("rev-parse", "--absolute-git-dir")
+        env = git_env()
+        env["GIT_INDEX_FILE"] = os.path.join(gitdir, "vault-sync-incoming")
+        git.ok("read-tree", theirs, env=env)
+        for name in (".obsidian", ".trash"):
+            if base and git.maybe("cat-file", "-t", f"{base}:{name}", env=env) == "tree":
+                git.ok("read-tree", f"--prefix={name}/", f"{base}:{name}", env=env)
+        return git.text("write-tree", env=env)
+
     def merge_incoming(self, tip):
         """GitHub's copy of this vault's folder, as a commit on top of the last
         sync, so a normal merge brings in exactly what changed there. Before
-        the first sync it has no parent, and the merge joins the two.
+        the first sync it has no parent, and the merge joins the two. With the
+        vault at the repository's root, that is GitHub's whole tree.
         
         .obsidian and .trash are excluded from the incoming tree: a repository
         contributor or compromised remote cannot place them in the vault."""
         git = self.git
-        theirs = git.maybe("rev-parse", "-q", "--verify", f"{tip}:{self.folder}")
+        theirs = git.maybe("rev-parse", "-q", "--verify",
+                           f"{tip}:{self.folder}" if self.folder else f"{tip}^{{tree}}")
         if not theirs:
             return                                   # the folder isn't on GitHub yet
         base = git.maybe("rev-parse", "-q", "--verify", self.refs + "/base^{commit}")
@@ -577,10 +634,12 @@ class Sync:
         
         # Filter the remote tree: read it into a temporary index, remove
         # .obsidian and .trash (which must never come from GitHub), and
-        # write the filtered tree.
+        # write the filtered tree. Then put this machine's own two folders
+        # back, so a merge never reads their absence as a deletion.
         filtered = self.filter_tree(theirs)
-        commit = git.text("commit-tree", filtered, *(["-p", base] if base else []),
-                          "-m", f"Sync: {self.folder} on GitHub")
+        incoming = self.incoming_tree(base, filtered)
+        commit = git.text("commit-tree", incoming, *(["-p", base] if base else []),
+                          "-m", f"Sync: {self.label} on GitHub")
         self.step("Merging")
         self.merging = self.merged = True
         code, _, err = git.run("merge", "-q", "--no-edit", "--allow-unrelated-histories",
@@ -659,17 +718,51 @@ class Sync:
         finally:
             os.close(fd)
 
+    def spec(self):
+        """The pathspec for this vault's folder in the repository: the folder
+        itself, or nothing at all when the vault is the repository's root (an
+        empty pathspec is every path)."""
+        return (":(top,literal)" + self.folder,) if self.folder else ()
+
+    def top_level(self, tree):
+        """The names at the top of a tree, unfiltered: a name the vault's
+        rel_path would reject is still a file a push would delete."""
+        out = self.git.ok("ls-tree", "-z", "--name-only", tree, cap=KiB * KiB)
+        return {n for n in out.split(b"\0") if n}
+
+    def check_root(self, tip):
+        """With the vault at the repository's root, what it pushes is the whole
+        tree, so anything else the repository holds at the top would be
+        deleted. That is refused instead of done."""
+        if not tip:
+            return
+        extra = sorted(self.top_level(tip) - self.top_level("HEAD"))
+        if not extra:
+            return
+        names = ", ".join(plain(n.decode("utf-8", "replace"), 60) for n in extra[:3])
+        more = " and more" if len(extra) > 3 else ""
+        raise Failure("The repository's root holds " + plain(names, 150) + more +
+                      ", which is not in the vault. Move it into the vault, or "
+                      "sync to a Vaults/ folder in a repository of its own.")
+
     def repository_tree(self, tip):
-        """The repository's tree with this vault's folder replaced by the
-        vault's HEAD, built in a separate index file so the vault's own index
-        and files are never touched."""
+        """The tree to push: the repository's tree with this vault's folder
+        replaced by the vault's HEAD, built in a separate index file so the
+        vault's own index and files are never touched. .obsidian and .trash
+        are left out of what the vault contributes, as everywhere else, so a
+        history that tracks them (a vault set up by hand) never pushes them.
+        With the vault at the repository's root the tree is the vault's own,
+        and anything else the repository holds at the top is refused."""
+        if not self.folder:
+            self.check_root(tip)
+            return self.filter_tree("HEAD")
         git = self.git
         gitdir = git.text("rev-parse", "--absolute-git-dir")
         env = git_env()
         env["GIT_INDEX_FILE"] = os.path.join(gitdir, "vault-sync-index")
         git.ok("read-tree", *([tip] if tip else ["--empty"]), env=env)
         git.ok("rm", "-r", "--cached", "-q", "--ignore-unmatch", "--", ":(top,literal)" + self.folder, env=env)
-        git.ok("read-tree", "--prefix=" + self.folder + "/", "HEAD", env=env)
+        git.ok("read-tree", "--prefix=" + self.folder + "/", self.filter_tree("HEAD"), env=env)
         return git.text("write-tree", env=env)
 
     def done(self, tip, pushed, before):
@@ -677,13 +770,13 @@ class Sync:
         before and after the push. Received: the vault before and after the
         merge."""
         git = self.git
+        spec = self.spec()
         sent = received = 0
         if pushed and pushed != tip:
             if tip:
-                sent = len(git.paths("diff", "--name-only", "-z", "--no-renames", tip, pushed, "--",
-                                     ":(top,literal)" + self.folder))
+                sent = len(git.paths("diff", "--name-only", "-z", "--no-renames", tip, pushed, "--", *spec))
             else:
-                sent = len(git.paths("ls-tree", "-r", "--name-only", "-z", pushed, "--", self.folder))
+                sent = len(git.paths("ls-tree", "-r", "--name-only", "-z", pushed, "--", *spec))
         if self.merged:
             if before:
                 changed = git.paths("diff", "--name-only", "-z", "--no-renames", before, "HEAD", "--")
@@ -722,24 +815,34 @@ def on_term(signum, frame):
 
 def main(argv):
     signal.signal(signal.SIGTERM, on_term)
-    if len(argv) < 4 or argv[1] not in ("status", "sync") or argv[3] != "--":
+    if len(argv) < 4 or argv[1] not in ("status", "sync"):
         return 2
     op = argv[1]
+    # --root: the vault is the repository's root, not a Vaults/<name> folder
+    # in it. One repository's root can only be one vault.
+    rest = argv[3:]
+    root = bool(rest) and rest[0] == "--root"
+    if root:
+        rest = rest[1:]
+    if not rest or rest[0] != "--":
+        return 2
     url = "" if argv[2] == "-" and op == "status" else repo_url(argv[2])
     if not url and not (argv[2] == "-" and op == "status"):
         return 2
     vaults = []
-    for v in argv[4:]:
+    for v in rest[1:]:
         p = vault_path(v)
         if not p or p in vaults or len(vaults) >= MAX_VAULTS:
             return 2
         vaults.append(p)
+    if root and len(vaults) != 1:
+        return 2
     for vault in vaults:
         try:
             if op == "status":
                 emit(status(vault, url))
             else:
-                job = Sync(vault, url, emit)
+                job = Sync(vault, url, emit, root)
                 try:
                     emit(job.run())
                 except BaseException:

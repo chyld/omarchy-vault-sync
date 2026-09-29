@@ -122,6 +122,8 @@ Panel {
     var s = root.service
     if (!s) return { text: "", color: root.barForeground }
     if (s.selected.indexOf(path) === -1) {
+      if (s.rootLayout && s.selected.length > 0)
+        return { text: "one vault at the root", color: Util.alpha(root.barForeground, 0.6) }
       var folder = Safe.vaultFolder(path)
       if (!folder) return { text: "can't sync this name", color: Util.alpha(root.barForeground, 0.6) }
       for (var i = 0; i < s.selected.length; i++)
@@ -557,7 +559,9 @@ Panel {
         }
 
         Caption {
-          text: "Syncs to Vaults/<name>/ \u00b7 .obsidian stays local"
+          text: root.service !== null && root.service.rootLayout
+            ? "Syncs to the repository's root \u00b7 .obsidian stays local"
+            : "Syncs to Vaults/<name>/ \u00b7 .obsidian stays local"
           color: Util.alpha(root.barForeground, 0.75)
         }
 
